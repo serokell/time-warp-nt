@@ -25,6 +25,7 @@ import           Mockable.Production
 import           Network.Discovery.Abstract
 import qualified Network.Discovery.Transport.Kademlia as K
 import           Network.Transport.Abstract           (Transport (..))
+import qualified Network.Kademlia                     as K (create, close)
 import           Network.Transport.Concrete           (concrete)
 import qualified Network.Transport.TCP                as TCP
 import           Node
@@ -89,15 +90,16 @@ makeNode transport i = do
             -- its initial peer appears to be down.
             then K.Node (K.Peer host (fromIntegral port)) anId
             else K.Node (K.Peer host (fromIntegral (port - 1))) (makeId (i - 1))
-    let kademliaConfig = K.KademliaConfiguration (fromIntegral port) anId
     let prng1 = mkStdGen (2 * i)
     let prng2 = mkStdGen ((2 * i) + 1)
     liftIO . putStrLn $ "Starting node " ++ show i
     fork $ node (simpleNodeEndPoint transport) prng1 BinaryP (B8.pack "my peer data!") defaultNodeEnvironment $ \node' ->
         NodeAction (listeners . nodeId $ node') $ \sactions -> do
             liftIO . putStrLn $ "Making discovery for node " ++ show i
-            discovery <- K.kademliaDiscovery kademliaConfig initialPeer (nodeEndPointAddress node')
-            worker (nodeId node') prng2 discovery sactions `finally` closeDiscovery discovery
+            kademliaInstance <- liftIO $ K.create "127.0.0.1" (fromIntegral port) (K.KSerialize anId)
+            discovery <- K.kademliaDiscovery kademliaInstance initialPeer (nodeEndPointAddress node')
+            worker (nodeId node') prng2 discovery sactions
+                `finally` (closeDiscovery discovery >> liftIO (K.close kademliaInstance))
     where
     makeId anId
         | anId < 10 = B8.pack ("node_identifier_0" ++ show anId)
