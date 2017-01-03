@@ -7,6 +7,7 @@
 {-# LANGUAGE StandaloneDeriving    #-}
 {-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE DataKinds             #-}
 
 module Main where
 
@@ -32,6 +33,7 @@ import           Node
 import           Node.Message                         (BinaryP (..))
 import           System.Environment                   (getArgs)
 import           System.Random
+import           Data.Proxy                           (Proxy(Proxy))
 
 data Pong = Pong
 deriving instance Generic Pong
@@ -96,14 +98,14 @@ makeNode transport i = do
     fork $ node (simpleNodeEndPoint transport) (const noReceiveDelay) prng1 BinaryP (B8.pack "my peer data!") defaultNodeEnvironment $ \node' ->
         NodeAction (listeners . nodeId $ node') $ \sactions -> do
             liftIO . putStrLn $ "Making discovery for node " ++ show i
-            kademliaInstance <- liftIO $ K.create "127.0.0.1" (fromIntegral port) (K.KSerialize anId)
+            kademliaInstance <- liftIO $ K.create "127.0.0.1" (fromIntegral port) anId
             discovery <- K.kademliaDiscovery kademliaInstance initialPeer (nodeEndPointAddress node')
             worker (nodeId node') prng2 discovery sactions
                 `finally` (closeDiscovery discovery >> liftIO (K.close kademliaInstance))
     where
-    makeId anId
-        | anId < 10 = B8.pack ("node_identifier_0" ++ show anId)
-        | otherwise = B8.pack ("node_identifier_" ++ show anId)
+    makeId i = K.makeKIdentifierPaddedTrimmed twenty (fromIntegral 0) (B8.pack (show i))
+    twenty :: Proxy 20
+    twenty = Proxy
 
 main :: IO ()
 main = runProduction $ do
