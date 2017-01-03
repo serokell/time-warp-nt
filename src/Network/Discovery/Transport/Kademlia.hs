@@ -4,9 +4,9 @@
 module Network.Discovery.Transport.Kademlia
        ( K.Node (..)
        , K.Peer (..)
-       , KademliaConfiguration (..)
        , KademliaDiscoveryErrorCode (..)
        , kademliaDiscovery
+       , KSerialize(..)
        ) where
 
 import qualified Control.Concurrent.STM      as STM
@@ -18,7 +18,6 @@ import qualified Data.ByteString.Lazy        as BL
 import qualified Data.Map.Strict             as M
 import qualified Data.Set                    as S
 import           Data.Typeable               (Typeable)
-import           Data.Word                   (Word16)
 import           GHC.Generics                (Generic)
 import qualified Network.Kademlia            as K
 
@@ -36,50 +35,33 @@ instance Binary i => K.Serialize (KSerialize i) where
         Right (unconsumed, _, i) -> Right (KSerialize i, BL.toStrict unconsumed)
     toBS (KSerialize i) = BL.toStrict . encode $ i
 
--- | Configuration for a Kademlia node.
-data KademliaConfiguration i = KademliaConfiguration {
-      kademliaHost :: String
-    , kademliaPort :: Word16
-      -- ^ The port on which to run the server (it's UDP)
-    , kademliaId   :: i
-      -- ^ Some value to use as the identifier for this node. To use it, it must
-      --   have a 'Binary' instance. You may want to take a random value, and
-      --   it should serialize to something long enough for your expected
-      --   network size (every node in the network needs a unique id).
-    }
-
 -- | Discovery peers using the Kademlia DHT. Nodes in this network will store
 --   their (assumed to be TCP transport) 'EndPointAddress'es and send them
 --   over the wire on request. NB there are two notions of ID here: the
 --   Kademlia IDs, and the 'EndPointAddress'es which are indexed by the former.
---
---   Many side-effects here: a Kademlia instance is created, grabbing a UDP
---   socket and using it to talk to a peer, storing data in the DHT once it has
---   been joined.
 kademliaDiscovery
     :: forall m i .
        (MonadIO m, Binary i, Ord i, Show i)
-    => KademliaConfiguration i
+    => K.KademliaInstance (KSerialize i) (KSerialize EndPointAddress)
     -> K.Node i
     -- ^ A known peer, necessary in order to join the network.
     --   If there are no other peers in the network, use this node's id.
     -> EndPointAddress
     -- ^ Local endpoint address. Will store it in the DHT.
     -> m (NetworkDiscovery KademliaDiscoveryErrorCode m)
-kademliaDiscovery configuration initialPeer myAddress = do
-    let kid :: KSerialize i
-        kid = KSerialize (kademliaId configuration)
-    let port :: Int
-        port = fromIntegral (kademliaPort configuration)
-    -- A Kademlia instance to do the DHT magic.
-    kademliaInst :: K.KademliaInstance (KSerialize i) (KSerialize EndPointAddress)
-        <- liftIO $ K.create (kademliaHost configuration) port kid
+kademliaDiscovery kademliaInst initialPeer myAddress = do
+    let -- The Kademlia identifier of the local node.
+        kid = K.nodeId (K.node kademliaInst)
     -- A TVar to cache the set of known peers at the last use of 'discoverPeers'
     peersTVar :: TVar.TVar (M.Map (K.Node (KSerialize i)) EndPointAddress)
         <- liftIO . TVar.newTVarIO $ M.empty
     let knownPeers = fmap (S.fromList . M.elems) . liftIO . TVar.readTVarIO $ peersTVar
     let discoverPeers = liftIO $ kademliaDiscoverPeers kademliaInst peersTVar
-    let close = liftIO $ K.close kademliaInst
+    -- Nothing to do on close. It's not our responsibility to close the
+    -- KademliaInstance.
+    -- TBD perhaps we should flip a bit here so that knownPeers and
+    -- discoverPeers no longer work after 'close'?
+    let close = pure ()
     -- Join the network and store the local 'EndPointAddress'.
     _ <- liftIO $ kademliaJoinAndUpdate kademliaInst peersTVar initialPeer
     liftIO $ K.store kademliaInst kid (KSerialize myAddress)
@@ -100,7 +82,6 @@ kademliaJoinAndUpdate kademliaInst peersTVar initialPeer = do
         K.NodeBanned -> pure $ Left (DiscoveryError KademliaNodeBanned "Node is banned by network")
         K.IDClash -> pure $ Left (DiscoveryError KademliaIdClash "ID clash in network")
         K.NodeDown -> pure $ Left (DiscoveryError KademliaInitialPeerDown "Initial peer is down")
-        -- [sic]
         K.JoinSuccess -> do
             peerList <- map fst <$> K.dumpPeers kademliaInst
             -- We have the peers, but we do not have the 'EndPointAddress'es for
