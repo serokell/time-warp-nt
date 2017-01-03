@@ -1,11 +1,18 @@
 {-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE StandaloneDeriving  #-}
 
 module Network.Discovery.Transport.Kademlia
        ( K.Node (..)
        , K.Peer (..)
        , KademliaDiscoveryErrorCode (..)
        , kademliaDiscovery
+       , KIdentifier (..)
+       , makeKIdentifier
+       , makeKIdentifierPaddedTrimmed
        , KSerialize(..)
        ) where
 
@@ -14,15 +21,78 @@ import qualified Control.Concurrent.STM.TVar as TVar
 import           Control.Monad               (forM)
 import           Control.Monad.IO.Class      (MonadIO, liftIO)
 import           Data.Binary                 (Binary, decodeOrFail, encode)
+import qualified Data.ByteString             as BS
 import qualified Data.ByteString.Lazy        as BL
 import qualified Data.Map.Strict             as M
 import qualified Data.Set                    as S
 import           Data.Typeable               (Typeable)
+import           Data.Word                   (Word8)
+import           Data.Proxy                  (Proxy(Proxy))
 import           GHC.Generics                (Generic)
+import           GHC.TypeLits                (Nat, KnownNat, natVal)
 import qualified Network.Kademlia            as K
-
 import           Network.Discovery.Abstract
 import           Network.Transport
+
+-- | A ByteString indexed by the number of bytes.
+--   Construct it using 'makeKIdentifier'.
+newtype KIdentifier (bytes :: Nat) = KIdentifier {
+      getKIdentifier :: BS.ByteString
+    }
+
+deriving instance Show (KIdentifier bytes)
+deriving instance Eq (KIdentifier bytes)
+deriving instance Ord (KIdentifier bytes)
+
+-- | Make a 'KIdentifier' from a 'ByteString'. It must be precisely 'bytes'
+--   bytes in length.
+makeKIdentifier
+    :: forall bytes .
+       ( KnownNat bytes )
+    => Proxy bytes
+    -> BS.ByteString
+    -> Either String (KIdentifier bytes)
+makeKIdentifier _ bs = case K.fromBS bs of
+    Left str -> Left str
+    Right (it, remainder) ->
+        if BS.null remainder
+        then Right it
+        else Left "KIdentifier is too long"
+
+-- | Make a 'KIdentifier' from a 'ByteString', handling too-short or too-long
+--   by respectively right-padding or right-trimming it.
+makeKIdentifierPaddedTrimmed
+    :: forall bytes .
+       ( KnownNat bytes )
+    => Proxy bytes
+    -> Word8
+    -> BS.ByteString
+    -> KIdentifier bytes
+makeKIdentifierPaddedTrimmed proxyBytes pad bs
+    | missingBytes == 0 =
+          let Right kid = makeKIdentifier proxyBytes bs in kid
+    | missingBytes < 0 =
+          let Right kid = makeKIdentifier proxyBytes (BS.take bytesVal bs) in kid
+    | missingBytes > 0 =
+          let Right kid = makeKIdentifier proxyBytes (BS.append bs (BS.pack (take missingBytes (repeat pad)))) in kid
+    | otherwise = error "makeKIdentifierPaddedTrimmed: impossible"
+    where
+    bytesVal :: Int
+    bytesVal = fromIntegral (natVal proxyBytes)
+    missingBytes = bytesVal - BS.length bs
+
+instance ( KnownNat bytes ) => K.Serialize (KIdentifier bytes) where
+    toBS (KIdentifier bs) = bs
+    fromBS bs = go ([], bs) (natVal (Proxy :: Proxy bytes))
+        where
+        go (words', remainder) n
+            | n < 0  = error "impossible: natVal is less than 0"
+            | n == 0 = Right (KIdentifier . BS.pack . reverse $ words', remainder)
+            | n > 0  = case BS.uncons remainder of
+                           Nothing -> Left "KIdentifier is too short"
+                           Just (word, remainder') ->
+                               go (word : words', remainder') (n - 1)
+            | otherwise = error "Serialize KIdentifier: impossible"
 
 -- | Wrapper which provides a 'K.Serialize' instance for any type with a
 --   'Binary' instance.
@@ -40,10 +110,10 @@ instance Binary i => K.Serialize (KSerialize i) where
 --   over the wire on request. NB there are two notions of ID here: the
 --   Kademlia IDs, and the 'EndPointAddress'es which are indexed by the former.
 kademliaDiscovery
-    :: forall m i .
-       (MonadIO m, Binary i, Ord i, Show i)
-    => K.KademliaInstance (KSerialize i) (KSerialize EndPointAddress)
-    -> K.Node i
+    :: forall m bytes .
+       (MonadIO m, KnownNat bytes)
+    => K.KademliaInstance (KIdentifier bytes) (KSerialize EndPointAddress)
+    -> K.Node (KIdentifier bytes)
     -- ^ A known peer, necessary in order to join the network.
     --   If there are no other peers in the network, use this node's id.
     -> EndPointAddress
@@ -53,7 +123,7 @@ kademliaDiscovery kademliaInst initialPeer myAddress = do
     -- The Kademlia identifier of the local node.
     let kid = K.nodeId (K.node kademliaInst)
     -- A TVar to cache the set of known peers at the last use of 'discoverPeers'
-    peersTVar :: TVar.TVar (M.Map (K.Node (KSerialize i)) EndPointAddress)
+    peersTVar :: TVar.TVar (M.Map (K.Node (KIdentifier byyes)) EndPointAddress)
         <- liftIO . TVar.newTVarIO $ M.empty
     let knownPeers = fmap (S.fromList . M.elems) . liftIO . TVar.readTVarIO $ peersTVar
     let discoverPeers = liftIO $ kademliaDiscoverPeers kademliaInst peersTVar
@@ -70,14 +140,14 @@ kademliaDiscovery kademliaInst initialPeer myAddress = do
 -- | Join a Kademlia network (using a given known node address) and update the
 --   known peers cache.
 kademliaJoinAndUpdate
-    :: forall i .
-       ( Binary i, Ord i )
-    => K.KademliaInstance (KSerialize i) (KSerialize EndPointAddress)
-    -> TVar.TVar (M.Map (K.Node (KSerialize i)) EndPointAddress)
-    -> K.Node i
+    :: forall bytes .
+       ( KnownNat bytes )
+    => K.KademliaInstance (KIdentifier bytes) (KSerialize EndPointAddress)
+    -> TVar.TVar (M.Map (K.Node (KIdentifier bytes)) EndPointAddress)
+    -> K.Node (KIdentifier bytes)
     -> IO (Either (DiscoveryError KademliaDiscoveryErrorCode) (S.Set EndPointAddress))
 kademliaJoinAndUpdate kademliaInst peersTVar initialPeer = do
-    result <- K.joinNetwork kademliaInst initialPeer'
+    result <- K.joinNetwork kademliaInst initialPeer
     case result of
         K.NodeBanned -> pure $ Left (DiscoveryError KademliaNodeBanned "Node is banned by network")
         K.IDClash -> pure $ Left (DiscoveryError KademliaIdClash "ID clash in network")
@@ -89,20 +159,16 @@ kademliaJoinAndUpdate kademliaInst peersTVar initialPeer = do
             endPointAddresses <- fmap (M.mapMaybe id) (kademliaLookupEndPointAddresses kademliaInst M.empty peerList)
             STM.atomically $ TVar.writeTVar peersTVar endPointAddresses
             pure $ Right (S.fromList (M.elems endPointAddresses))
-  where
-    initialPeer' :: K.Node (KSerialize i)
-    initialPeer' = case initialPeer of
-        K.Node peer nid -> K.Node peer (KSerialize nid)
 
 -- | Update the known peers cache.
 --
 --   FIXME: error reporting. Should perhaps give a list of all of the errors
 --   which occurred.
 kademliaDiscoverPeers
-    :: forall i .
-       ( Binary i, Ord i )
-    => K.KademliaInstance (KSerialize i) (KSerialize EndPointAddress)
-    -> TVar.TVar (M.Map (K.Node (KSerialize i)) EndPointAddress)
+    :: forall bytes .
+       ( KnownNat bytes )
+    => K.KademliaInstance (KIdentifier bytes) (KSerialize EndPointAddress)
+    -> TVar.TVar (M.Map (K.Node (KIdentifier bytes)) EndPointAddress)
     -> IO (Either (DiscoveryError KademliaDiscoveryErrorCode) (S.Set EndPointAddress))
 kademliaDiscoverPeers kademliaInst peersTVar = do
     recordedPeers <- TVar.readTVarIO peersTVar
@@ -118,16 +184,16 @@ kademliaDiscoverPeers kademliaInst peersTVar = do
 -- | Look up the 'EndPointAddress's for a set of nodes.
 --   See 'kademliaLookupEndPointAddress'
 kademliaLookupEndPointAddresses
-    :: forall i .
-       ( Binary i, Ord i )
-    => K.KademliaInstance (KSerialize i) (KSerialize EndPointAddress)
-    -> M.Map (K.Node (KSerialize i)) EndPointAddress
-    -> [K.Node (KSerialize i)]
-    -> IO (M.Map (K.Node (KSerialize i)) (Maybe EndPointAddress))
+    :: forall bytes .
+       ( KnownNat bytes )
+    => K.KademliaInstance (KIdentifier bytes) (KSerialize EndPointAddress)
+    -> M.Map (K.Node (KIdentifier bytes)) EndPointAddress
+    -> [K.Node (KIdentifier bytes)]
+    -> IO (M.Map (K.Node (KIdentifier bytes)) (Maybe EndPointAddress))
 kademliaLookupEndPointAddresses kademliaInst recordedPeers currentPeers = do
     -- TODO do this in parallel, as each one may induce a blocking lookup.
     endPointAddresses <- forM currentPeers (kademliaLookupEndPointAddress kademliaInst recordedPeers)
-    let assoc :: [(K.Node (KSerialize i), Maybe EndPointAddress)]
+    let assoc :: [(K.Node (KIdentifier bytes), Maybe EndPointAddress)]
         assoc = zip currentPeers endPointAddresses
     pure $ M.fromList assoc
 
@@ -138,13 +204,13 @@ kademliaLookupEndPointAddresses kademliaInst recordedPeers currentPeers = do
 --   we look that up in the table. Nodes for which the 'EndPointAddress' is
 --   already known are not looked up.
 kademliaLookupEndPointAddress
-    :: forall i .
-       ( Binary i, Ord i )
-    => K.KademliaInstance (KSerialize i) (KSerialize EndPointAddress)
-    -> M.Map (K.Node (KSerialize i)) EndPointAddress
+    :: forall bytes .
+       ( KnownNat bytes )
+    => K.KademliaInstance (KIdentifier bytes) (KSerialize EndPointAddress)
+    -> M.Map (K.Node (KIdentifier bytes)) EndPointAddress
     -- ^ The current set of recorded peers. We don't lookup an 'EndPointAddress'
     --   for any of these, we just use the one in the map.
-    -> K.Node (KSerialize i)
+    -> K.Node (KIdentifier bytes)
     -> IO (Maybe EndPointAddress)
 kademliaLookupEndPointAddress kademliaInst recordedPeers peer@(K.Node _ nid) =
     case M.lookup peer recordedPeers of
