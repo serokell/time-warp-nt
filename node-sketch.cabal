@@ -21,6 +21,9 @@ Library
 
                         Node
 
+                        Broadcast.Abstract
+                        Broadcast.Kademlia
+
                         Mockable
                         Mockable.Channel
                         Mockable.Class
@@ -107,6 +110,28 @@ executable discovery
                       , random
                       , time-units
                       , kademlia
+
+  hs-source-dirs:       examples
+  default-language:     Haskell2010
+  ghc-options:          -threaded -Wall -fno-warn-orphans
+  default-extensions:   DeriveDataTypeable
+                        DeriveGeneric
+                        GeneralizedNewtypeDeriving
+                        OverloadedStrings
+                        RecordWildCards
+
+executable broadcast
+  main-is:              Broadcast.hs
+  build-depends:        base >= 4.8 && < 5
+                      , binary
+                      , bytestring
+                      , containers
+                      , network-transport-inmemory
+                      , network-transport-tcp
+                      , node-sketch
+                      , random
+                      , kademlia
+                      , SHA
 
   hs-source-dirs:       examples
   default-language:     Haskell2010
