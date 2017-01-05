@@ -11,6 +11,11 @@ module Network.Discovery.Transport.Kademlia
        , KademliaDiscoveryErrorCode (..)
        , kademliaDiscovery
        , KIdentifier (..)
+       , kademliaDiscoveryExposeInternals
+       , KademliaDiscovery
+       , kdInstance
+       , kdEndPointAddresses
+       , kdDiscovery
        , makeKIdentifier
        , makeKIdentifierPaddedTrimmed
        , KSerialize(..)
@@ -20,7 +25,9 @@ import qualified Control.Concurrent.STM      as STM
 import qualified Control.Concurrent.STM.TVar as TVar
 import           Control.Monad               (forM)
 import           Control.Monad.IO.Class      (MonadIO, liftIO)
-import           Data.Binary                 (Binary, decodeOrFail, encode)
+import           Data.Binary                 (Binary, get, put, decodeOrFail, encode)
+import           Data.Binary.Get             (getByteString)
+import           Data.Binary.Put             (putByteString)
 import qualified Data.ByteString             as BS
 import qualified Data.ByteString.Lazy        as BL
 import qualified Data.Map.Strict             as M
@@ -94,6 +101,10 @@ instance ( KnownNat bytes ) => K.Serialize (KIdentifier bytes) where
                                go (word : words', remainder') (n - 1)
             | otherwise = error "Serialize KIdentifier: impossible"
 
+instance ( KnownNat bytes ) => Binary (KIdentifier bytes) where
+    put (KIdentifier bs) = putByteString bs
+    get = KIdentifier <$> getByteString (fromIntegral (natVal (Proxy :: Proxy bytes)))
+
 -- | Wrapper which provides a 'K.Serialize' instance for any type with a
 --   'Binary' instance.
 newtype KSerialize i = KSerialize i
@@ -105,10 +116,17 @@ instance Binary i => K.Serialize (KSerialize i) where
         Right (unconsumed, _, i) -> Right (KSerialize i, BL.toStrict unconsumed)
     toBS (KSerialize i) = BL.toStrict . encode $ i
 
--- | Discovery peers using the Kademlia DHT. Nodes in this network will store
---   their (assumed to be TCP transport) 'EndPointAddress'es and send them
---   over the wire on request. NB there are two notions of ID here: the
---   Kademlia IDs, and the 'EndPointAddress'es which are indexed by the former.
+-- | The internals of a Kademlia network discovery. It's the same as
+--   'NetworkDiscovery KademliaDiscoveryErrorCode m' but also includes a
+--   'KademliaInstance'.
+data KademliaDiscovery (bytes :: Nat) (m :: * -> *) = KademliaDiscovery {
+      kdInstance :: K.KademliaInstance (KIdentifier bytes) (KSerialize EndPointAddress)
+    , kdEndPointAddresses :: TVar.TVar (M.Map (K.Node (KIdentifier bytes)) EndPointAddress)
+    , kdDiscovery :: NetworkDiscovery KademliaDiscoveryErrorCode m
+    }
+
+-- | Same as 'kademliaDiscoveryExposeInternals', but a 'NetworkDiscovery'
+--   is directly returned.
 kademliaDiscovery
     :: forall m bytes .
        (MonadIO m, KnownNat bytes)
@@ -119,11 +137,27 @@ kademliaDiscovery
     -> EndPointAddress
     -- ^ Local endpoint address. Will store it in the DHT.
     -> m (NetworkDiscovery KademliaDiscoveryErrorCode m)
-kademliaDiscovery kademliaInst initialPeer myAddress = do
+kademliaDiscovery inst node epa = kdDiscovery <$> kademliaDiscoveryExposeInternals inst node epa
+
+-- | Discovery peers using the Kademlia DHT. Nodes in this network will store
+--   their (assumed to be TCP transport) 'EndPointAddress'es and send them
+--   over the wire on request. NB there are two notions of ID here: the
+--   Kademlia IDs, and the 'EndPointAddress'es which are indexed by the former.
+kademliaDiscoveryExposeInternals
+    :: forall m bytes .
+       (MonadIO m, KnownNat bytes)
+    => K.KademliaInstance (KIdentifier bytes) (KSerialize EndPointAddress)
+    -> K.Node (KIdentifier bytes)
+    -- ^ A known peer, necessary in order to join the network.
+    --   If there are no other peers in the network, use this node's id.
+    -> EndPointAddress
+    -- ^ Local endpoint address. Will store it in the DHT.
+    -> m (KademliaDiscovery bytes m)
+kademliaDiscoveryExposeInternals kademliaInst initialPeer myAddress = do
     -- The Kademlia identifier of the local node.
     let kid = K.nodeId (K.node kademliaInst)
     -- A TVar to cache the set of known peers at the last use of 'discoverPeers'
-    peersTVar :: TVar.TVar (M.Map (K.Node (KIdentifier byyes)) EndPointAddress)
+    peersTVar :: TVar.TVar (M.Map (K.Node (KIdentifier bytes)) EndPointAddress)
         <- liftIO . TVar.newTVarIO $ M.empty
     let knownPeers = fmap (S.fromList . M.elems) . liftIO . TVar.readTVarIO $ peersTVar
     let discoverPeers = liftIO $ kademliaDiscoverPeers kademliaInst peersTVar
@@ -134,8 +168,9 @@ kademliaDiscovery kademliaInst initialPeer myAddress = do
     let close = pure ()
     -- Join the network and store the local 'EndPointAddress'.
     _ <- liftIO $ kademliaJoinAndUpdate kademliaInst peersTVar initialPeer
-    liftIO $ K.store kademliaInst kid (KSerialize myAddress)
-    pure $ NetworkDiscovery knownPeers discoverPeers close
+    () <- liftIO $ K.store kademliaInst kid (KSerialize myAddress)
+    let nd = NetworkDiscovery knownPeers discoverPeers close
+    pure $ KademliaDiscovery kademliaInst peersTVar nd
 
 -- | Join a Kademlia network (using a given known node address) and update the
 --   known peers cache.
