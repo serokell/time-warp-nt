@@ -68,7 +68,7 @@ makeListener transport sharedState i k = do
             liftIO $ K.close kademliaInstance
     where
     listener discovery (_, withRepeater) nid = withRepeater $ \repeater peerid sactions (body :: Int) -> do
-        liftIO . putStrLn $ show nid ++ " : " ++ show body
+        --liftIO . putStrLn $ show nid ++ " : " ++ show body
         _ <- SA.modifySharedAtomic sharedState $ \map ->
             -- Int overflow is expected. All we care about is that every value
             -- in this map is eventually the same, which almost certainly

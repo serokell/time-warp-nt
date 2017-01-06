@@ -31,6 +31,8 @@ import qualified Data.Set as S
 import qualified Data.Map.Strict as M
 import qualified Node as N
 import           Node.Message (Message (..), MessageName (..), Serializable, BinaryP)
+import           Mockable.Class (Mockable)
+import           Mockable.Concurrent (forConcurrently, Concurrently)
 
 data WithKademliaIdentifier bytes body = WithKademliaIdentifier {
       wkiIdentifier :: KIdentifier bytes
@@ -54,7 +56,7 @@ instance ( KnownNat bytes, Message body ) => Message (WithKademliaIdentifier byt
 
 kademliaBroadcast
     :: forall bytes peerData body m .
-       ( KnownNat bytes, Message body, Binary body, MonadIO m )
+       ( KnownNat bytes, Message body, Binary body, MonadIO m, Mockable Concurrently m )
     => KademliaDiscovery bytes m
     -> Broadcast BinaryP peerData body m
 kademliaBroadcast kd = do
@@ -64,7 +66,7 @@ kademliaBroadcast kd = do
 
 kademliaInitiator
     :: forall bytes peerData body m .
-       ( KnownNat bytes, Message body, Binary body, MonadIO m )
+       ( KnownNat bytes, Message body, Binary body, MonadIO m, Mockable Concurrently m )
     => KademliaDiscovery bytes m
     -> Initiator BinaryP peerData body m
 kademliaInitiator kd body sactions = do
@@ -87,15 +89,15 @@ kademliaInitiator kd body sactions = do
     -- a given MostSignificant 1 bit.
     --let buckets = KT.toView kademliaTree >>= organizeBucket . eliminateId myKId
     let buckets = organizeBucket myKId . eliminateId myKId . KT.toList $ kademliaTree
-    liftIO . putStrLn $ "Initial broadcast buckets are " ++ show buckets
-    -- TODO concurrently.
-    _ <- forM buckets $ \knodes -> case firstKnownAddress knownAddresses knodes of
+    --liftIO . putStrLn $ "Initial broadcast buckets are " ++ show buckets
+    _ <- forConcurrently buckets $ \knodes -> case firstKnownAddress knownAddresses knodes of
         -- TODO we know a node but not yet its address. This isn't an
         -- error and will probably happen once in a while. Log it?
         Nothing -> do
-            liftIO . putStrLn $ "Missing addresses for " ++ show knodes
+            --liftIO . putStrLn $ "Missing addresses for " ++ show knodes
+            pure ()
         Just addr -> do
-            liftIO . putStrLn $ "Initiating broadcast to " ++ show addr
+            --liftIO . putStrLn $ "Initiating broadcast to " ++ show addr
             N.sendTo sactions (N.NodeId addr) payload
     pure ()
     where
@@ -103,7 +105,7 @@ kademliaInitiator kd body sactions = do
 
 kademliaWithRepeater
     :: forall bytes peerData body m .
-       ( Message body, Binary body, KnownNat bytes, MonadIO m )
+       ( Message body, Binary body, KnownNat bytes, MonadIO m, Mockable Concurrently m )
     => KademliaDiscovery bytes m
     -> WithRepeater BinaryP peerData body m
 kademliaWithRepeater kd f = N.ListenerActionOneMsg $ \_ nodeId sactions (wki :: WithKademliaIdentifier bytes body) -> do
@@ -114,11 +116,10 @@ kademliaWithRepeater kd f = N.ListenerActionOneMsg $ \_ nodeId sactions (wki :: 
             kademliaTree <- liftIO . STM.atomically . STM.readTVar . KI.sTree . KI.state . kdInstance $ kd
             knownAddresses <- liftIO . STM.atomically . STM.readTVar . kdEndPointAddresses $ kd
             let buckets = bucketsCloserTo myKId senderKId kademliaTree
-            liftIO . putStrLn $ "Repeat broadcast buckets are " ++ show buckets
+            --liftIO . putStrLn $ "Repeat broadcast buckets are " ++ show buckets
             --liftIO . putStrLn $ "My id is " ++ show (toByteStruct myKId)
             --liftIO . putStrLn $ "His id is " ++ show (toByteStruct senderKId)
-            -- TODO concurrently.
-            _ <- forM buckets $ \knodes -> case firstKnownAddress knownAddresses knodes of
+            _ <- forConcurrently buckets $ \knodes -> case firstKnownAddress knownAddresses knodes of
                 Nothing -> pure ()
                 Just addr -> N.sendTo sactions (N.NodeId addr) payload
             pure ()
@@ -190,8 +191,7 @@ bucketsCloserTo here there tree@(KT.NodeTree _ _) =
                 LT -> True
                 GT -> False
 
-    xor :: Bool -> Bool -> Bool
-    xor a b = not (a && b) && (a || b)
+    xor a b = not ((a && b) && (a || b))
 
     trimBucket'
         :: [Bool]
