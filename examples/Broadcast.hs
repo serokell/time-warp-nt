@@ -111,8 +111,10 @@ makeBroadcaster transport n = do
         pure ()
     worker discovery bcast@(initiator, _) prng n sactions = do
         let (m :: Int, prng') = random prng
+        liftIO . putStrLn $ "Discovering"
         _ <- discoverPeers (K.kdDiscovery discovery)
         peers <- knownPeers (K.kdDiscovery discovery)
+        liftIO . putStrLn $ "Broadcasting " ++ show m
         initiator m sactions
         delay 500000
         worker discovery bcast prng' (n - 1) sactions
