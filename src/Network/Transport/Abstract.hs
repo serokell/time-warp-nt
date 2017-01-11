@@ -21,6 +21,10 @@ module Network.Transport.Abstract
   , NT.ConnectErrorCode(..)
   , NT.SendErrorCode(..)
   , EventErrorCode(..)
+  , Policy
+  , PolicyDecision(..)
+  , Decision(..)
+  , alwaysAccept
   ) where
 
 import Data.Typeable
@@ -36,7 +40,7 @@ import qualified Network.Transport as NT
 -- | A network transport over some monad.
 data Transport m = Transport {
     -- | Create a new end point (heavyweight operation)
-    newEndPoint :: m (Either (NT.TransportError NT.NewEndPointErrorCode) (EndPoint m))
+    newEndPoint :: Policy m -> m (Either (NT.TransportError NT.NewEndPointErrorCode) (EndPoint m))
     -- | Shutdown the transport completely
   , closeTransport :: m ()
   }
@@ -92,3 +96,16 @@ data EventErrorCode = UnsupportedEvent | EventErrorCode NT.EventErrorCode
   deriving (Show, Eq, Generic, Typeable)
 
 instance Binary EventErrorCode
+
+type Policy m = NT.EndPointAddress -> PolicyDecision m
+
+newtype PolicyDecision m = PolicyDecision {
+      getPolicyDecision :: m (Decision m, PolicyDecision m)
+    }
+
+data Decision m = Accept | Block (m ())
+
+alwaysAccept :: ( Applicative m ) => Policy m
+alwaysAccept _ = acceptForever
+    where
+    acceptForever = PolicyDecision $ pure (Accept, acceptForever)

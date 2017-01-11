@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Network.Transport.Concrete
        ( concrete
@@ -6,22 +7,30 @@ module Network.Transport.Concrete
 
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import qualified Network.Transport          as NT
-
 import           Network.Transport.Abstract
 
 -- | Use a concrete network-transport within the abstract framework,
 --   specializing it to some MonadIO.
-concrete :: MonadIO m => NT.Transport -> Transport m
-concrete transport = Transport {
-      newEndPoint = concreteNewEndPoint (NT.newEndPoint transport)
-    , closeTransport = liftIO $ NT.closeTransport transport
+concrete
+    :: ( MonadIO m )
+    => (Policy m -> IO (Either (TransportError NewEndPointErrorCode) NT.EndPoint))
+       -- ^ newEndPoint
+    -> IO ()
+       -- ^ closeTransport
+    -> Transport m
+concrete newEndPoint closeTransport = Transport {
+      newEndPoint = concreteNewEndPoint newEndPoint
+    , closeTransport = liftIO closeTransport
     }
 
 concreteNewEndPoint
     :: ( MonadIO m )
-    => IO (Either (TransportError NewEndPointErrorCode) NT.EndPoint)
+    => (Policy m -> IO (Either (TransportError NewEndPointErrorCode) NT.EndPoint))
+    -> Policy m
     -> m (Either (TransportError NewEndPointErrorCode) (EndPoint m))
-concreteNewEndPoint ntNewEndPoint = (fmap . fmap) concreteEndPoint (liftIO ntNewEndPoint)
+concreteNewEndPoint ntNewEndPoint policy = (fmap . fmap) concreteEndPoint newEndPoint
+    where
+    newEndPoint = liftIO (ntNewEndPoint policy)
 
 concreteEndPoint :: ( MonadIO m ) => NT.EndPoint -> EndPoint m
 concreteEndPoint ep = EndPoint {

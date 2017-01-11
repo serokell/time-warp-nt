@@ -50,7 +50,7 @@ import           Mockable.Concurrent         (delay, fork, for, forConcurrently)
 import           Mockable.Exception          (catch, throw)
 import           Mockable.Production         (Production (..))
 import           Network.Transport.Abstract  (closeTransport)
-import           Network.Transport.Concrete  (concrete)
+import           Network.Transport.Concrete.TCP (concreteTCP)
 import qualified Network.Transport.TCP       as TCP
 import           Serokell.Util.Concurrent    (modifyTVarS)
 import           System.Random               (mkStdGen)
@@ -225,8 +225,9 @@ deliveryTest testState workers listeners = runProduction $ do
               TCP.tcpReuseServerAddr = True
             , TCP.tcpReuseClientAddr = True
             }
-    transport_ <- throwLeft $ liftIO $ TCP.createTransport "127.0.0.1" "10342" tcpParams
-    let transport = concrete transport_
+    tcpTransport <-
+        throwLeft $ liftIO $ TCP.createTransportExposeInternals "127.0.0.1" "10342" tcpParams
+    let transport = concreteTCP runProduction tcpTransport
 
     let prng1 = mkStdGen 0
     let prng2 = mkStdGen 1
@@ -235,18 +236,24 @@ deliveryTest testState workers listeners = runProduction $ do
     node transport prng1 BinaryP $ \serverNode -> do
         -- Server EndPoint is up.
         pure $ NodeAction listeners $ \_ -> do
+            --liftIO . putStrLn $ "Server started"
             node transport prng2 BinaryP $ \_ -> do
                 -- Client EndPoint is up.
                 pure $ NodeAction [] $ \clientSendActions -> do
+                    --liftIO . putStrLn $ "Client started"
                     void . forConcurrently workers $ \worker ->
                         worker (nodeId serverNode) clientSendActions
                     -- Client EndPoint closes here
+                    --liftIO . putStrLn $ "Client closing"
+                    awaitSTM 5000000 $ S.null . _expected <$> readTVar testState
             -- Must not let the server EndPoint close too soon. It's possible
             -- that the client (which has just closed) will still have data
             -- in-flight, which we expect the server to pick up.
             -- So we wait for receiver to get everything, but not for too long.
-            awaitSTM 5000000 $ S.null . _expected <$> readTVar testState
+            --liftIO . putStrLn $ "Client closed"
+            --liftIO . putStrLn $ "Server closing"
             -- Server EndPoint closes here
+    --liftIO . putStrLn $ "Server closed"
 
     closeTransport transport
 

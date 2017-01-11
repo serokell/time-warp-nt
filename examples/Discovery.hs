@@ -24,7 +24,7 @@ import           Mockable.Production
 import           Network.Discovery.Abstract
 import qualified Network.Discovery.Transport.Kademlia as K
 import           Network.Transport.Abstract           (Transport (..))
-import           Network.Transport.Concrete           (concrete)
+import           Network.Transport.Concrete.TCP       (concreteTCP)
 import qualified Network.Transport.TCP                as TCP
 import           Node
 import           System.Environment                   (getArgs)
@@ -102,8 +102,9 @@ main = runProduction $ do
 
     when (number > 99 || number < 1) $ error "Give a number in [1,99]"
 
-    Right transport_ <- liftIO $ TCP.createTransport ("127.0.0.1") ("10128") TCP.defaultTCPParameters
-    let transport = concrete transport_
+    Right tcpTransport <-
+        liftIO $ TCP.createTransportExposeInternals ("127.0.0.1") ("10128") TCP.defaultTCPParameters
+    let transport = concreteTCP runProduction tcpTransport
 
     liftIO . putStrLn $ "Spawning " ++ show number ++ " nodes"
     nodeThreads <- forM [0..number] (makeNode transport)

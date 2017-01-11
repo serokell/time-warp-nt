@@ -16,6 +16,7 @@ Library
                         Network.Discovery.Transport.Kademlia
                         Network.Transport.Abstract
                         Network.Transport.Concrete
+                        Network.Transport.Concrete.TCP
 
                         Node
 
@@ -63,6 +64,7 @@ Library
                       , network
                       , network-transport
                       , network-transport-inmemory
+                      , network-transport-tcp
                       , mtl >= 2.2.1
                       , random
                       , universum

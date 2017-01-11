@@ -26,6 +26,7 @@ module Mockable.Concurrent (
   , Promise
   , Async(..)
   , async
+  , link
   , wait
   , cancel
   , waitAny
@@ -101,12 +102,16 @@ type family Promise (m :: * -> *) :: * -> *
 
 data Async m t where
     Async :: m t -> Async m (Promise m t)
+    Link :: Promise m t -> Async m ()
     Wait :: Promise m t -> Async m t
     WaitAny :: [Promise m t] -> Async m (Promise m t, t)
     Cancel :: Promise m t -> Async m ()
 
 async :: ( Mockable Async m ) => m t -> m (Promise m t)
 async m = liftMockable $ Async m
+
+link :: ( Mockable Async m ) => Promise m t -> m ()
+link promise = liftMockable $ Link promise
 
 wait :: ( Mockable Async m ) => Promise m t -> m t
 wait promise = liftMockable $ Wait promise
@@ -119,6 +124,7 @@ cancel promise = liftMockable $ Cancel promise
 
 instance (Promise n ~ Promise m) => MFunctor' Async m n where
     hoist' nat (Async act) = Async $ nat act
+    hoist' _ (Link p)      = Link p
     hoist' _ (Wait p)      = Wait p
     hoist' _ (WaitAny p)   = WaitAny p
     hoist' _ (Cancel p)    = Cancel p
