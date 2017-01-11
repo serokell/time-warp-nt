@@ -236,7 +236,7 @@ node
     :: forall packing m t .
        ( Mockable Fork m, Mockable Throw m, Mockable Channel m
        , Mockable SharedAtomic m, Mockable Bracket m, Mockable Catch m
-       , Mockable Async m
+       , Mockable Async m, Mockable Delay m
        , MonadFix m
        , Serializable packing MessageName
        )

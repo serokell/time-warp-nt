@@ -29,6 +29,8 @@ import           Mockable.Exception       (Bracket (..), Catch (..), Throw (..))
 import           Mockable.SharedAtomic    (SharedAtomic (..), SharedAtomicT)
 import           Universum                (MonadFail (..))
 
+import Debug.Trace
+
 newtype Production t = Production
     { runProduction :: IO t
     } deriving (Functor, Applicative, Monad)
@@ -63,6 +65,7 @@ type instance Promise Production = Conc.Async
 
 instance Mockable Async Production where
     liftMockable (Async m)          = Production $ Conc.async (runProduction m)
+    liftMockable (Link promise)     = Production $ Conc.link promise
     liftMockable (Wait promise)     = Production $ Conc.wait promise
     liftMockable (WaitAny promises) = Production $ Conc.waitAny promises
     liftMockable (Cancel promise)   = Production $ Conc.cancel promise

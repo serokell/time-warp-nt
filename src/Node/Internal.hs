@@ -43,6 +43,7 @@ import qualified Data.NonEmptySet              as NESet
 import           Data.List.NonEmpty            (NonEmpty((:|)))
 import           Data.Monoid
 import           Data.Typeable
+import           Data.Time.Units               (Microsecond)
 import qualified Mockable.Channel              as Channel
 import           Mockable.Class
 import           Mockable.Concurrent
@@ -111,9 +112,16 @@ newtype ChannelIn m = ChannelIn (Channel.ChannelT m (Maybe BS.ByteString))
 -- | Output to the wire.
 newtype ChannelOut m = ChannelOut (NT.Connection m)
 
+constantDelayPolicy :: ( Mockable Delay m ) => Microsecond -> NT.Policy m
+constantDelayPolicy us _ = loop
+    where
+    loop = NT.PolicyDecision $ pure (block, loop)
+    block = NT.Block $ delay (for us)
+
 -- | Bring up a 'Node' using a network transport.
 startNode :: ( Mockable SharedAtomic m, Mockable Async m, Mockable Bracket m
-             , Mockable Channel.Channel m, Mockable Throw m, Mockable Catch m )
+             , Mockable Channel.Channel m, Mockable Throw m, Mockable Catch m
+             , Mockable Delay m )
           => NT.Transport m
           -> StdGen
           -> (NodeId -> ChannelIn m -> m ())
@@ -122,10 +130,13 @@ startNode :: ( Mockable SharedAtomic m, Mockable Async m, Mockable Bracket m
           -- ^ Handle incoming bidirectional connections.
           -> m (Node m)
 startNode transport prng handlerIn handlerOut = do
-    Right endPoint <- NT.newEndPoint transport
+    Right endPoint <- NT.newEndPoint transport (constantDelayPolicy 5000)
     sharedState <- newSharedAtomic (NodeState prng Map.empty [] False)
     dispatcherThread <- async $
         nodeDispatcher endPoint sharedState handlerIn handlerOut
+    -- link the dispatcher thread to this thread, so that exceptions thrown
+    -- in the dispatcher are re-thrown here.
+    _ <- link dispatcherThread
     return Node {
       nodeEndPoint         = endPoint,
       nodeDispatcherThread = dispatcherThread,
@@ -255,7 +266,7 @@ nodeDispatcher :: forall m .
                -> (NodeId -> ChannelIn m -> m ())
                -> (NodeId -> ChannelIn m -> ChannelOut m -> m ())
                -> m ()
-nodeDispatcher endpoint nodeState handlerIn handlerInOut =
+nodeDispatcher endpoint nodeState handlerIn handlerInOut = do
     loop emptyDispatcherState
     where
 
@@ -286,8 +297,6 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
         -- If the handler is connected, we'll update the connection state for
         -- that ConnectionId to say the handler has finished.
         (!state', !nonces') <- foldlM folder (state, nonces) finished
-        --() <- trace ("DEBUG: state map size is " ++ show (Map.size state')) (pure ())
-        --() <- trace ("DEBUG: nonce map size is " ++ show (Map.size nonces')) (pure ())
         pure ((NodeState prng nonces' [] closed), state')
         where
 
@@ -477,7 +486,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
       event <- NT.receive endpoint
       case event of
 
-          NT.ConnectionOpened connid NT.ReliableOrdered peer ->
+          NT.ConnectionOpened connid NT.ReliableOrdered peer -> do
               -- Just keep track of the new connection and reverse lookup
               -- from EndPointAddress.
               loop $ state {
@@ -488,8 +497,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
           -- receiving data for an existing connection (ie a multi-chunk message)
           NT.Received connid chunks ->
               case Map.lookup connid (dispatcherConnections state) of
-                  Nothing ->
-                      throw (InternalError "received data on unknown connection")
+                  Nothing -> throw $ InternalError ("received data on unknown connection " ++ show connid)
 
                   -- TODO: need policy here on queue size
                   Just (peer, ConnectionNew) ->
@@ -527,14 +535,14 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
 
           NT.ConnectionClosed connid ->
               case Map.lookup connid (dispatcherConnections state) of
-                  Nothing ->
+                  Nothing -> do
                       throw (InternalError "closed unknown connection")
 
                   -- Connection closed, handler already finished. We're done
                   -- with the connection. The case in which the handler finishes
                   -- *after* the connection closes is taken care of in
                   -- 'updateStateForFinishedHandlers'.
-                  Just (peer, ConnectionHandlerFinished _) ->
+                  Just (peer, ConnectionHandlerFinished _) -> do
                       loop $ state {
                             dispatcherConnections = Map.delete connid (dispatcherConnections state)
                           , dispatcherPeers = Map.update (NESet.delete connid) peer (dispatcherPeers state)
@@ -577,10 +585,11 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                             dispatcherConnections = Map.insert connid (peer, ConnectionClosed promise) (dispatcherConnections state)
                           }
 
-                  Just (peer, ConnectionClosed _) ->
+                  Just (peer, ConnectionClosed _) -> do
                       throw (InternalError "closed a closed connection")
 
-          NT.EndPointClosed -> waitForRunningHandlers state
+          NT.EndPointClosed -> do
+              waitForRunningHandlers state
 
           -- Losing a connection is no reason to stop the dispatcher. It is in
           -- fact a normal thing, as it can be caused by peers failing or
@@ -636,7 +645,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
           NT.ErrorEvent (NT.TransportError (NT.EventErrorCode NT.EventEndPointFailed) _) ->
               throw (InternalError "EndPoint failed")
 
-          NT.ErrorEvent (NT.TransportError (NT.EventErrorCode NT.EventTransportFailed) _) ->
+          NT.ErrorEvent (NT.TransportError (NT.EventErrorCode NT.EventTransportFailed) _) -> 
               throw (InternalError "Transport failed")
 
           NT.ErrorEvent (NT.TransportError NT.UnsupportedEvent _) ->

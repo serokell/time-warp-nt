@@ -16,7 +16,7 @@ import           GHC.Generics               (Generic)
 import           Message.Message            (BinaryP (..))
 import           Mockable.Concurrent        (delay, for, fork, killThread)
 import           Mockable.Production
-import           Network.Transport.Concrete (concrete)
+import           Network.Transport.Concrete.TCP (concreteTCP)
 import qualified Network.Transport.TCP      as TCP
 import           Node
 import           System.Random
@@ -71,8 +71,9 @@ listeners anId = [pongWorker]
 main :: IO ()
 main = runProduction $ do
 
-    Right transport_ <- liftIO $ TCP.createTransport ("127.0.0.1") ("10128") TCP.defaultTCPParameters
-    let transport = concrete transport_
+    Right tcpTransport <-
+        liftIO $ TCP.createTransportExposeInternals ("127.0.0.1") ("10128") TCP.defaultTCPParameters
+    let transport = concreteTCP runProduction tcpTransport
 
     let prng1 = mkStdGen 0
     let prng2 = mkStdGen 1
