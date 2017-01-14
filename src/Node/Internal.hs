@@ -26,7 +26,8 @@ module Node.Internal (
     readChannel
   ) where
 
-import           Control.Exception             hiding (bracket, catch, finally, throw)
+import           Control.Exception             hiding (bracket, catch, finally, throw,
+                                                try)
 import           Control.Monad                 (forM_)
 import           Control.Monad.Fix             (MonadFix)
 import           Data.Binary                   as Bin
@@ -43,7 +44,7 @@ import           Data.Monoid
 import           Data.NonEmptySet              (NonEmptySet)
 import qualified Data.NonEmptySet              as NESet
 import           Data.Typeable
-import           Formatting                    (sformat, shown, (%))
+import           Formatting                    (sformat, shown, string, (%))
 import qualified Mockable.Channel              as Channel
 import           Mockable.Class
 import           Mockable.Concurrent
@@ -308,7 +309,9 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
             Right nonce -> folderNonce (dispatcherState, nonces) (nonce, e)
 
         folderNonce (dispatcherState, nonces) (nonce, e) = case Map.lookup nonce nonces of
-            Nothing -> throw $ InternalError "handler for unknown nonce finished"
+            Nothing -> do
+                logDebug "internal error: handler for unknown nonce finished"
+                pure (dispatcherState, nonces)
             -- The handler did not yet connect (SYN/ACK handshake did not go
             -- through). It's weird, but normal: the conversation did not
             -- 'recv' any data and ended before the peer could respond with the
@@ -321,7 +324,9 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                 (,) <$> updateDispatcherState dispatcherState connid e <*> pure (Map.delete nonce nonces)
 
         updateDispatcherState dispatcherState connid e = case Map.lookup connid (dispatcherConnections dispatcherState) of
-            Nothing -> throw $ InternalError "handler for unknown connection finished"
+            Nothing -> do
+                logDebug "internal error: handler for unknown connection finished"
+                pure (dispatcherState)
             -- Handler finished after the connection closed. Now we can
             -- remove this entry from the map, as well as from the reverse
             -- lookup map.
@@ -366,6 +371,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
         pickOutgoingHandlerPromise _ = id
 
     -- Handle the first chunks received, interpreting the control byte(s).
+    -- Exceptions from this function are handled in dispatcher.
     -- TODO: review this. It currently does not use the 'DispatcherState' but
     -- that's dubious. Implementing good error handling will probably demand
     -- using it.
@@ -499,8 +505,9 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
           -- receiving data for an existing connection (ie a multi-chunk message)
           NT.Received connid chunks ->
               case Map.lookup connid (dispatcherConnections state) of
-                  Nothing ->
-                      throw (InternalError "received data on unknown connection")
+                  Nothing -> do
+                      logDebug "internal error: received data on unknown connection"
+                      loop state
 
                   -- TODO: need policy here on queue size
                   Just (peer, ConnectionNew) ->
@@ -509,10 +516,14 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                           }
 
                   Just (peer, ConnectionNewChunks chunks0) -> do
-                      mConnState <- handleFirstChunks connid peer (chunks0 ++ chunks) state
-                      case mConnState of
-                          Nothing -> loop $ state
-                          Just cs -> loop $ state {
+                      emConnState <- try $ handleFirstChunks connid peer (chunks0 ++ chunks) state
+                      case emConnState of
+                          Left (SomeException e) -> do
+                              logDebug $ sformat ("Error while handling first chunks for "
+                                %shown%": "%shown) peer e
+                              loop state
+                          Right Nothing   -> loop $ state
+                          Right (Just cs) -> loop $ state {
                                 dispatcherConnections = Map.insert connid (peer, cs) (dispatcherConnections state)
                               }
 
@@ -522,8 +533,10 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                     Channel.writeChannel chan (Just (BS.concat chunks))
                     loop state
 
-                  Just (_peer, ConnectionClosed _) ->
-                    throw (InternalError "received data on closed connection")
+                  Just (peer, ConnectionClosed _) -> do
+                    logDebug $ sformat ("internal error: received data on closed\
+                        \connection for "%shown) peer
+                    loop state
 
                   -- The peer keeps pushing data but our handler is finished.
                   -- What to do? Would like to close the connection but I'm
@@ -533,13 +546,16 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                   -- EndPointId of the peer, and then maybe patch
                   -- network-transport to allow for selective closing of peer
                   -- connection based on EndPointAddress.
-                  Just (_peer, ConnectionHandlerFinished _) ->
-                    throw (InternalError "received too much data")
+                  Just (peer, ConnectionHandlerFinished _) -> do
+                    logDebug $ sformat ("internal error: received too much data for "
+                        %shown) peer
+                    loop state
 
           NT.ConnectionClosed connid ->
               case Map.lookup connid (dispatcherConnections state) of
-                  Nothing ->
-                      throw (InternalError "closed unknown connection")
+                  Nothing -> do
+                      logDebug "internal error: closed unknown connection"
+                      loop state
 
                   -- Connection closed, handler already finished. We're done
                   -- with the connection. The case in which the handler finishes
@@ -562,15 +578,15 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
 
                   -- Small message
                   Just (peer, ConnectionNewChunks chunks0) -> do
-                      mConnState <- handleFirstChunks connid peer chunks0 state
-                      case mConnState of
-                          Just (ConnectionReceiving promise (ChannelIn chan)) -> do
+                      emConnState <- try $ handleFirstChunks connid peer chunks0 state
+                      case emConnState of
+                          Right (Just (ConnectionReceiving promise (ChannelIn chan))) -> do
                               -- Write Nothing to indicate end of input.
                               Channel.writeChannel chan Nothing
                               loop $ state {
                                     dispatcherConnections = Map.insert connid (peer, ConnectionClosed promise) (dispatcherConnections state)
                                   }
-                          Just other -> loop $ state {
+                          Right (Just other) -> loop $ state {
                                 dispatcherConnections = Map.insert connid (peer, other) (dispatcherConnections state)
                               }
                           -- There's no handler for the chunks, possibly because
@@ -578,7 +594,11 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                           -- conversation mode, but the local handler has
                           -- already finished. It's strange behavior but not
                           -- an error.
-                          Nothing -> loop state
+                          Right Nothing -> loop state
+                          Left (SomeException e) -> do
+                              logDebug $ sformat ("Error while handling first chunks for "
+                                %shown%": "%shown) peer e
+                              loop state
 
                   -- End of incoming data. Signal that by writing 'Nothing'
                   -- to the ChannelIn.
@@ -588,8 +608,11 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                             dispatcherConnections = Map.insert connid (peer, ConnectionClosed promise) (dispatcherConnections state)
                           }
 
-                  Just (_peer, ConnectionClosed _) ->
-                      throw (InternalError "closed a closed connection")
+                  Just (peer, ConnectionClosed _) -> do
+                      logDebug $
+                        sformat ("internal error: closed a closed connection to "%shown)
+                        peer
+                      loop state
 
           NT.EndPointClosed -> waitForRunningHandlers state
 
@@ -629,7 +652,9 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                   -> NT.ConnectionId
                   -> m (DispatcherState m, [NT.ConnectionId])
               eliminateConnection (_state, removals) connid = case Map.lookup connid (dispatcherConnections state) of
-                  Nothing -> throw (InternalError "connection associated with peer does not exist")
+                  Nothing -> do
+                      logDebug "connection associated with peer does not exist"
+                      pure (state, removals)
                   Just (_peer, ConnectionReceiving handler (ChannelIn chan)) -> do
                       -- Signal to the handler that there's no more input.
                       Channel.writeChannel chan Nothing
@@ -644,17 +669,24 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                   _ -> let state' = state { dispatcherConnections = Map.delete connid (dispatcherConnections state) }
                        in  pure (state', connid : removals)
 
-          NT.ErrorEvent (NT.TransportError (NT.EventErrorCode NT.EventEndPointFailed) _) ->
-              throw (InternalError "EndPoint failed")
+          NT.ErrorEvent (NT.TransportError (NT.EventErrorCode NT.EventEndPointFailed) e) -> do
+              logDebug $ sformat ("internal error: EndPoint failed: "%string) e
+              loop state
 
-          NT.ErrorEvent (NT.TransportError (NT.EventErrorCode NT.EventTransportFailed) _) ->
-              throw (InternalError "Transport failed")
+          NT.ErrorEvent (NT.TransportError (NT.EventErrorCode NT.EventTransportFailed) e) -> do
+              logDebug $ sformat ("internal error: Transport failed"%string) e
+              -- TODO: continue?
+              loop state
 
-          NT.ErrorEvent (NT.TransportError NT.UnsupportedEvent _) ->
-              throw (InternalError "Unsupported event")
+          NT.ErrorEvent (NT.TransportError NT.UnsupportedEvent e) -> do
+              logDebug $ sformat ("internal error: Unsupported event"%shown) e
+              loop state
 
-          NT.ConnectionOpened _ _ _ ->
-              throw (ProtocolError "unexpected connection reliability")
+          NT.ConnectionOpened _ reliablity _ -> do
+              logDebug $ sformat
+                ("protocol error: unexpected connection reliability"%shown)
+                reliablity
+              loop state
 
 -- | Augment some m term so that it always updates a 'NodeState' mutable
 --   cell when finished, along with the exception if one was raised. We catch
