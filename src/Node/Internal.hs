@@ -7,9 +7,9 @@
 {-# LANGUAGE KindSignatures             #-}
 {-# LANGUAGE NamedFieldPuns             #-}
 {-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE RecursiveDo                #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE StandaloneDeriving         #-}
-{-# LANGUAGE RecursiveDo                #-}
 
 module Node.Internal (
     NodeId(..),
@@ -26,22 +26,22 @@ module Node.Internal (
     readChannel
   ) where
 
+import           Control.Exception             hiding (bracket, catch, finally, throw)
 import           Control.Monad                 (forM_)
 import           Control.Monad.Fix             (MonadFix)
-import           Control.Exception             hiding (bracket, catch, finally, throw)
-import           Data.Foldable                 (foldlM)
 import           Data.Binary                   as Bin
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as BS
 import qualified Data.ByteString.Builder.Extra as BS
 import qualified Data.ByteString.Lazy          as LBS
+import           Data.Foldable                 (foldlM)
 import           Data.Hashable                 (Hashable)
+import           Data.List.NonEmpty            (NonEmpty ((:|)))
 import           Data.Map.Strict               (Map)
 import qualified Data.Map.Strict               as Map
+import           Data.Monoid
 import           Data.NonEmptySet              (NonEmptySet)
 import qualified Data.NonEmptySet              as NESet
-import           Data.List.NonEmpty            (NonEmpty((:|)))
-import           Data.Monoid
 import           Data.Typeable
 import qualified Mockable.Channel              as Channel
 import           Mockable.Class
@@ -59,16 +59,16 @@ newtype NodeId = NodeId NT.EndPointAddress
 -- | The state of a Node, to be held in a shared atomic cell because other
 --   threads will mutate it in order to set up bidirectional connections.
 data NodeState m = NodeState {
-      _nodeStateGen      :: !StdGen
+      _nodeStateGen              :: !StdGen
       -- ^ To generate nonces.
-    , _nodeStateNonces   :: !(Map Nonce (NonceState m))
+    , _nodeStateNonces           :: !(Map Nonce (NonceState m))
       -- ^ Nonces identify bidirectional connections, and this gives the state
       --   of each one.
     , _nodeStateFinishedHandlers :: ![(Either NT.ConnectionId Nonce, Maybe SomeException)]
       -- ^ Connection identifiers or nonces for handlers which have finished.
       --   'Nonce's for bidirectional connections, 'ConnectionId's for handlers
       --   spawned to respond to incoming connections.
-    , _nodeStateClosed :: !Bool
+    , _nodeStateClosed           :: !Bool
       -- ^ Indicates whether the Node has been closed and is no longer capable
       --   of establishing or accepting connections (its EndPoint is closed).
     }
@@ -297,7 +297,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
             -> (Either NT.ConnectionId Nonce, Maybe SomeException)
             -> m (DispatcherState m, Map Nonce (NonceState m))
         folder (dispatcherState, nonces) (connidOrNonce, e) = case connidOrNonce of
-            -- The handler for a ConnectionId has finished. 
+            -- The handler for a ConnectionId has finished.
             Left connid -> (,) <$> updateDispatcherState dispatcherState connid e <*> pure nonces
             -- The handler for a locally-iniated conversation has finished.
             Right nonce -> folderNonce (dispatcherState, nonces) (nonce, e)
@@ -334,7 +334,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
     -- | Wait for all running handlers to finish.
     waitForRunningHandlers :: DispatcherState m -> m ()
     waitForRunningHandlers state = do
-        nonces <- modifySharedAtomic nodeState $ \ns@(NodeState prng nonces finished closed) ->
+        nonces <- modifySharedAtomic nodeState $ \ns@(NodeState _prng nonces _finished _closed) ->
             pure (ns, nonces)
         let outgoingHandlerPromises :: [(SomeHandler m, Maybe (ChannelIn m))]
             outgoingHandlerPromises = foldr pickOutgoingHandlerPromise [] nonces
@@ -347,7 +347,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
         -- TBD should we signal "premature end of input" instead, to
         -- differentiate it from the peer terminating the connection?
         closeChannelIn :: Maybe (ChannelIn m) -> m ()
-        closeChannelIn Nothing = pure ()
+        closeChannelIn Nothing                 = pure ()
         closeChannelIn (Just (ChannelIn chan)) = Channel.writeChannel chan Nothing
 
         incomingHandlerPromises :: [(SomeHandler m, Maybe (ChannelIn m))]
@@ -405,7 +405,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                           -- we just ignore it. network-transport should
                           -- ensure that the peer receives an error event
                           -- indicating that we've closed their connection.
-                          mconn <- modifySharedAtomic nodeState $ \ns@(NodeState prng nonces finishedHandlers closed) ->
+                          mconn <- modifySharedAtomic nodeState $ \ns@(NodeState _prng _nonces _finishedHandlers closed) ->
                               if closed
                               then pure (ns, Nothing)
                               else do
@@ -507,11 +507,11 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
 
                   -- Connection is receiving data and there's some handler
                   -- at 'tid' to run it. Dump the new data to its ChannelIn.
-                  Just (peer, ConnectionReceiving _ (ChannelIn chan)) -> do
+                  Just (_peer, ConnectionReceiving _ (ChannelIn chan)) -> do
                     Channel.writeChannel chan (Just (BS.concat chunks))
                     loop state
 
-                  Just (peer, ConnectionClosed _) ->
+                  Just (_peer, ConnectionClosed _) ->
                     throw (InternalError "received data on closed connection")
 
                   -- The peer keeps pushing data but our handler is finished.
@@ -522,7 +522,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                   -- EndPointId of the peer, and then maybe patch
                   -- network-transport to allow for selective closing of peer
                   -- connection based on EndPointAddress.
-                  Just (peer, ConnectionHandlerFinished _) ->
+                  Just (_peer, ConnectionHandlerFinished _) ->
                     throw (InternalError "received too much data")
 
           NT.ConnectionClosed connid ->
@@ -577,7 +577,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                             dispatcherConnections = Map.insert connid (peer, ConnectionClosed promise) (dispatcherConnections state)
                           }
 
-                  Just (peer, ConnectionClosed _) ->
+                  Just (_peer, ConnectionClosed _) ->
                       throw (InternalError "closed a closed connection")
 
           NT.EndPointClosed -> waitForRunningHandlers state
@@ -603,7 +603,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
           NT.ErrorEvent (NT.TransportError (NT.EventErrorCode (NT.EventConnectionLost peer)) _msg) -> do
               let connids :: [NT.ConnectionId]
                   connids = case Map.lookup peer (dispatcherPeers state) of
-                      Nothing -> []
+                      Nothing    -> []
                       Just neset -> let t :| ts = NESet.toList neset in t : ts
               (!state', removals) <- foldlM eliminateConnection (state, []) connids
               loop $ state' {
@@ -617,9 +617,9 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                   :: (DispatcherState m, [NT.ConnectionId])
                   -> NT.ConnectionId
                   -> m (DispatcherState m, [NT.ConnectionId])
-              eliminateConnection (state, removals) connid = case Map.lookup connid (dispatcherConnections state) of
+              eliminateConnection (_state, removals) connid = case Map.lookup connid (dispatcherConnections state) of
                   Nothing -> throw (InternalError "connection associated with peer does not exist")
-                  Just (peer, ConnectionReceiving handler (ChannelIn chan)) -> do
+                  Just (_peer, ConnectionReceiving handler (ChannelIn chan)) -> do
                       -- Signal to the handler that there's no more input.
                       Channel.writeChannel chan Nothing
                       let state' = state {
