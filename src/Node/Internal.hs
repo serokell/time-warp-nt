@@ -484,8 +484,10 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                           Channel.writeChannel chan (Just (BS.concat (LBS.toChunks ws')))
                           pure . Just $ ConnectionReceiving promise (ChannelIn chan)
 
-                | otherwise ->
-                    throw (ProtocolError $ "unexpected control header " ++ show w)
+                | otherwise -> do
+                    logDebug $ sformat ("protocol error: unexpected control header "
+                        %shown) w
+                    pure Nothing
 
     loop :: DispatcherState m -> m ()
     loop !initialState = do
@@ -515,14 +517,10 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                           }
 
                   Just (peer, ConnectionNewChunks chunks0) -> do
-                      emConnState <- try $ handleFirstChunks connid peer (chunks0 ++ chunks) state
-                      case emConnState of
-                          Left (SomeException e) -> do
-                              logDebug $ sformat ("Error while handling first chunks for "
-                                %shown%": "%shown) peer e
-                              loop state
-                          Right Nothing   -> loop $ state
-                          Right (Just cs) -> loop $ state {
+                      mConnState <- handleFirstChunks connid peer (chunks0 ++ chunks) state
+                      case mConnState of
+                          Nothing -> loop $ state
+                          Just cs -> loop $ state {
                                 dispatcherConnections = Map.insert connid (peer, cs) (dispatcherConnections state)
                               }
 
@@ -577,15 +575,15 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
 
                   -- Small message
                   Just (peer, ConnectionNewChunks chunks0) -> do
-                      emConnState <- try $ handleFirstChunks connid peer chunks0 state
-                      case emConnState of
-                          Right (Just (ConnectionReceiving promise (ChannelIn chan))) -> do
+                      mConnState <- handleFirstChunks connid peer chunks0 state
+                      case mConnState of
+                          Just (ConnectionReceiving promise (ChannelIn chan)) -> do
                               -- Write Nothing to indicate end of input.
                               Channel.writeChannel chan Nothing
                               loop $ state {
                                     dispatcherConnections = Map.insert connid (peer, ConnectionClosed promise) (dispatcherConnections state)
                                   }
-                          Right (Just other) -> loop $ state {
+                          Just other -> loop $ state {
                                 dispatcherConnections = Map.insert connid (peer, other) (dispatcherConnections state)
                               }
                           -- There's no handler for the chunks, possibly because
@@ -593,11 +591,7 @@ nodeDispatcher endpoint nodeState handlerIn handlerInOut =
                           -- conversation mode, but the local handler has
                           -- already finished. It's strange behavior but not
                           -- an error.
-                          Right Nothing -> loop state
-                          Left (SomeException e) -> do
-                              logDebug $ sformat ("Error while handling first chunks for "
-                                %shown%": "%shown) peer e
-                              loop state
+                          Nothing -> loop state
 
                   -- End of incoming data. Signal that by writing 'Nothing'
                   -- to the ChannelIn.
