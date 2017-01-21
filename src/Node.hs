@@ -42,6 +42,7 @@ import qualified Data.ByteString.Lazy       as LBS
 import           Data.Map.Strict            (Map)
 import qualified Data.Map.Strict            as M
 import           Data.Proxy                 (Proxy (..))
+import           Formatting                 (sformat, shown, (%))
 import           Mockable.Channel
 import           Mockable.Class
 import           Mockable.Concurrent
@@ -279,9 +280,11 @@ node transport prng packing k = do
                             NoParse -> logDebug "handlerIn : failed to parse message body"
                             Input msgBody -> do
                                 action peerId sendActions msgBody
-                    -- If it's a conversation listener, then that's an error, no?
-                    Just (ListenerActionConversation _) -> error ("handlerIn : wrong listener type. Expected unidirectional for " ++ show msgName)
-                    Nothing -> error ("handlerIn : no listener for " ++ show msgName)
+                    Just (ListenerActionConversation _) -> logDebug $
+                        sformat ("handlerIn : wrong listener type. Expected\
+                        \unidirectional for "%shown) msgName
+                    Nothing -> logDebug $
+                        sformat ("handlerIn : no listener for "%shown) msgName
 
     -- Handle incoming data from a bidirectional connection: try to read the
     -- message name, then choose a listener and fork a thread to run it.
@@ -303,8 +306,11 @@ node transport prng packing k = do
                         let cactions = nodeConversationActions nodeUnit peerId packing
                                 inchan outchan
                         in  action peerId cactions
-                    Just (ListenerActionOneMsg _) -> error ("handlerInOut : wrong listener type. Expected bidirectional for " ++ show msgName)
-                    Nothing -> error ("handlerInOut : no listener for " ++ show msgName)
+                    Just (ListenerActionOneMsg _) ->  logDebug $
+                        sformat ("handlerInOut : wrong listener type. Expected\
+                        \bidirectional for "%shown) msgName
+                    Nothing -> logDebug $
+                        sformat ("handlerInOut : no listener for "%shown) msgName
 
 recvNext'
     :: ( Mockable Channel m, Unpackable packing thing )
