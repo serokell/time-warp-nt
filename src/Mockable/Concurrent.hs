@@ -155,11 +155,14 @@ forConcurrently = flip mapConcurrently
 waitAnyNonFail
     :: ( Mockable Async m, Eq (Promise m (Maybe a)) )
     => [ Promise m (Maybe a) ] -> m (Maybe (Promise m (Maybe a), a))
+waitAnyNonFail []       = pure Nothing
 waitAnyNonFail promises = waitAny promises >>= handleRes
   where
     handleRes (p, Just res) = pure $ Just (p, res)
     handleRes (p, _)        = waitAnyNonFail (filter (/= p) promises)
 
+-- | Waits for any of given actions to succeed.
+-- Unlike `waitAny` & co from `async` package, it won't hang if all acions fail.
 waitAnyUnexceptional
     :: ( Mockable Async m, Mockable Catch m, Eq (Promise m (Maybe a)) )
     => [m a] -> m (Maybe a)
