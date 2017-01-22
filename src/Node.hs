@@ -37,6 +37,7 @@ module Node (
 
     ) where
 
+import           Control.Monad              (when)
 import           Control.Monad.Fix          (MonadFix)
 import qualified Data.ByteString.Lazy       as LBS
 import           Data.Map.Strict            (Map)
@@ -53,7 +54,7 @@ import           Node.Internal              (ChannelIn (..), ChannelOut (..))
 import qualified Node.Internal              as LL
 import           Node.Message
 import           System.Random              (StdGen)
-import           System.Wlog                (WithLogger, logDebug)
+import           System.Wlog                (WithLogger, logDebug, logWarning)
 
 data Node m = Node {
       nodeId       :: LL.NodeId
@@ -251,13 +252,13 @@ node transport prng packing k = do
         ; let endPoint = LL.nodeEndPoint llnode
         ; let nodeUnit = Node nId endPoint
         ; NodeAction listeners act <- k nodeUnit
-          -- Index the listeners by message name, for faster lookup.
-          -- TODO: report conflicting names, or statically eliminate them using
-          -- DataKinds and TypeFamilies.
         ; let listenerIndex :: ListenerIndex packing m
-              (listenerIndex, _conflictingNames) = makeListenerIndex listeners
+              (listenerIndex, conflictingNames) = makeListenerIndex listeners
         ; let sendActions = nodeSendActions llnode packing
         }
+    when (not $ null conflictingNames) $
+        logWarning $ sformat ("Conflicting listeners registered: "%shown)
+                     conflictingNames
     act sendActions `finally` LL.stopNode llnode
   where
     -- Handle incoming data from unidirectional connections: try to read the
