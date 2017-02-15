@@ -1,4 +1,5 @@
-resolver: lts-7.13
+resolver: lts-7.16
+compiler: ghc-8.0.2
 
 packages:
   - '.'
@@ -7,12 +8,12 @@ packages:
       commit: 278171b8ab104c78aa95bcdd9b63c8ced4fb1ed2
     extra-dep: true
   - location:
-      git: https://github.com/serokell/universum
-      commit: db3cd301545e5da000e53ca2cdf274e0386192bf
+      git: https://github.com/avieth/network-transport-tcp
+      commit: d2705abd5b54707ca97b5bf9c9c24005e800ee49
     extra-dep: true
   - location:
-      git: https://github.com/serokell/network-transport-tcp.git
-      commit: 586c9bf830252476522cab6274ef8ddc32615686
+      git: https://github.com/avieth/network-transport
+      commit: e7a5f44d0d98370d16df103c9dc61ef7bf15aee8
     extra-dep: true
 
 extra-deps:
@@ -29,7 +30,8 @@ extra-deps:
   - aeson-extra-0.4.0.0
   - data-msgpack-0.0.8
   - recursion-schemes-5.0.1
-  - log-warper-0.2.3
+  - log-warper-0.4.1
+  - universum-0.2.1
 
 flags: {}
 extra-package-dbs: []

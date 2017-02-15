@@ -10,17 +10,16 @@
 {-# LANGUAGE UndecidableInstances  #-}
 
 module Node.Message
-    ( Input (..)
-    , Packable (..)
+    ( Packable (..)
     , Unpackable (..)
     , Serializable
+    , Bin.Decoder(..)
 
     , Message (..)
     , messageName'
 
     , MessageName (..)
     , BinaryP (..)
-    , recvNext
     ) where
 
 import           Control.Monad                 (unless)
@@ -31,13 +30,17 @@ import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder.Extra as BS
 import qualified Data.ByteString.Lazy          as LBS
 import           Data.Data                     (Data, dataTypeName, dataTypeOf)
+import           Data.Hashable                 (Hashable)
 import           Data.Proxy                    (Proxy (..), asProxyTypeOf)
 import           Data.String                   (IsString)
 import           Data.String                   (fromString)
 import qualified Data.Text                     as T
-import           Data.Void                     (Void, absurd)
+import           Data.Text.Buildable           (Buildable)
+import qualified Data.Text.Buildable           as B
 import qualified Formatting                    as F
 import           GHC.Generics                  (Generic)
+import           Serokell.Util.Base16          (base16F)
+
 import           Mockable.Channel              (Channel, ChannelT, readChannel,
                                                 unGetChannel)
 import           Mockable.Class                (Mockable)
@@ -51,7 +54,12 @@ deriving instance Ord MessageName
 deriving instance Show MessageName
 deriving instance Generic MessageName
 deriving instance IsString MessageName
+deriving instance Hashable MessageName
+deriving instance Monoid MessageName
 instance Bin.Binary MessageName
+
+instance Buildable MessageName where
+    build (MessageName mn) = F.bprint base16F mn
 
 -- | Defines type with it's own `MessageName`.
 class Message m where
@@ -67,13 +75,6 @@ class Message m where
     default formatMessage :: F.Buildable m => m -> T.Text
     formatMessage = F.sformat F.build
 
-
--- | Common instances
-
-instance Message Void where
-    formatMessage = absurd
-
-
 -- | As `messageName`, but accepts message itself, may be more convinient is most cases.
 messageName' :: Message m => m -> MessageName
 messageName' = messageName . proxyOf
@@ -81,13 +82,7 @@ messageName' = messageName . proxyOf
     proxyOf :: a -> Proxy a
     proxyOf _ = Proxy
 
-
 -- * Serialization strategy
-
-data Input t where
-    End :: Input t
-    NoParse :: Input t
-    Input :: t -> Input t
 
 -- | Defines a way to serialize object @r@ with given packing type @p@.
 class Packable packing thing where
@@ -97,16 +92,12 @@ class Packable packing thing where
 
 -- | Defines a way to deserealize data with given packing type @p@ and extract object @t@.
 class Unpackable packing thing where
-    unpackMsg :: ( Mockable Channel m )
-              => packing
-              -> ChannelT m (Maybe BS.ByteString)
-              -> m (Input thing)
+    unpackMsg :: packing -> Bin.Decoder thing
 
 type Serializable packing thing =
     ( Packable packing thing
     , Unpackable packing thing
     )
-
 
 -- * Default instances
 
@@ -121,41 +112,4 @@ instance Bin.Binary t => Packable BinaryP t where
         $ Bin.put t
 
 instance Bin.Binary t => Unpackable BinaryP t where
-    unpackMsg _ = recvNext Bin.get
-
--- | Receive input from a channel.
---   If the channel's first element is 'Nothing' then it's the end of
---   input and you'll get 'End', otherwise we try to parse the 'thing'.
---   Unconsumed input is pushed back into the channel so that subsequent
---   'recvNext's will use it.
-recvNext
-    :: ( Mockable Channel m )
-    => Bin.Get thing
-    -> ChannelT m (Maybe BS.ByteString)
-    -> m (Input thing)
-recvNext get' chan = do
-    mx <- readChannel chan
-    case mx of
-        Nothing -> pure End
-        Just bs -> do
-            (part, trailing) <- recvPart get' chan bs
-            unless (BS.null trailing) $
-                unGetChannel chan (Just trailing)
-            case part of
-                Nothing -> pure NoParse
-                Just t  -> pure (Input t)
-
-recvPart
-    :: ( Mockable Channel m )
-    => Bin.Get thing
-    -> ChannelT m (Maybe BS.ByteString)    -- source
-    -> BS.ByteString                       -- prefix
-    -> m (Maybe thing, BS.ByteString)      -- trailing
-recvPart get' chan prefix =
-    go (Bin.pushChunk (Bin.runGetIncremental get') prefix)
-  where
-    go (Bin.Done trailing _ a) = return (Just a, trailing)
-    go (Bin.Fail trailing _ _) = return (Nothing, trailing)
-    go (Bin.Partial continue) = do
-      mx <- readChannel chan
-      go (continue mx)
+    unpackMsg _ = Bin.runGetIncremental Bin.get
