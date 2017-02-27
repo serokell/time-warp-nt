@@ -6,12 +6,12 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures             #-}
 {-# LANGUAGE NamedFieldPuns             #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE RecursiveDo                #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE StandaloneDeriving         #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
 module Node.Internal (
@@ -33,41 +33,45 @@ module Node.Internal (
 
 import           Control.Exception             hiding (bracket, catch, finally, throw,
                                                 try)
-import           Control.Monad                 (forM_, forM, when)
+import           Control.Monad                 (forM, forM_, unless, when)
 import           Control.Monad.Fix             (MonadFix)
-import           Data.Int                      (Int64)
 import           Data.Binary                   as Bin
 import           Data.Binary.Get               as Bin
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as BS
 import qualified Data.ByteString.Builder.Extra as BS
 import qualified Data.ByteString.Lazy          as LBS
-import           Data.Foldable                 (foldlM, foldl')
+import           Data.Foldable                 (foldl', foldlM, toList)
 import           Data.Hashable                 (Hashable)
+import           Data.Int                      (Int64)
+import           Data.List                     (intercalate)
 import           Data.List.NonEmpty            (NonEmpty ((:|)))
 import           Data.Map.Strict               (Map)
 import qualified Data.Map.Strict               as Map
-import           Data.Set                      (Set)
-import qualified Data.Set                      as Set
+import           Data.Monoid
 import           Data.NonEmptySet              (NonEmptySet)
 import qualified Data.NonEmptySet              as NESet
-import           Data.Monoid
-import           Data.Typeable
+import           Data.Sequence                 (Seq)
+import qualified Data.Sequence                 as Seq
+import           Data.Set                      (Set)
+import qualified Data.Set                      as Set
 import           Data.Time.Units               (Microsecond)
+import           Data.Typeable
 import           Formatting                    (sformat, shown, string, (%))
 import qualified Mockable.Channel              as Channel
 import           Mockable.Class
 import           Mockable.Concurrent
+import           Mockable.CurrentTime          (CurrentTime, currentTime)
 import           Mockable.Exception
+import qualified Mockable.Metrics              as Metrics
 import           Mockable.SharedAtomic
 import           Mockable.SharedExclusive
-import           Mockable.CurrentTime          (CurrentTime, currentTime)
-import qualified Mockable.Metrics              as Metrics
 import qualified Network.Transport             as NT (EventErrorCode (EventConnectionLost, EventEndPointFailed, EventTransportFailed))
 import qualified Network.Transport.Abstract    as NT
-import           System.Random                 (Random, StdGen, random)
-import           System.Wlog                   (WithLogger, logDebug, logError, logWarning)
 import qualified Node.Message                  as Message
+import           System.Random                 (Random, StdGen, random)
+import           System.Wlog                   (WithLogger, logDebug, logError,
+                                                logWarning)
 
 -- | A 'NodeId' wraps a network-transport endpoint address
 newtype NodeId = NodeId NT.EndPointAddress
@@ -121,7 +125,7 @@ initialNodeState prng = do
 
 data SomeHandler m = forall t . SomeHandler {
       someHandlerThreadId :: !(ThreadId m)
-    , someHandlerPromise :: !(Promise m t)
+    , someHandlerPromise  :: !(Promise m t)
     }
 
 -- | Correctness relies on the assumption that the ThreadId is that of the
@@ -210,25 +214,25 @@ data Statistics m = Statistics {
       --   bidirectional).
       --   NB a handler may run longer or shorter than the duration of a
       --   connection.
-      stRunningHandlersRemote :: !(Metrics.Gauge m)
+      stRunningHandlersRemote         :: !(Metrics.Gauge m)
       -- | How many handlers are running right now which were initiated
       --   locally, i.e. corresponding to bidirectional connections.
-    , stRunningHandlersLocal :: !(Metrics.Gauge m)
+    , stRunningHandlersLocal          :: !(Metrics.Gauge m)
       -- | Statistics for each peer.
-    , stPeerStatistics :: !(Map NT.EndPointAddress PeerStatistics)
+    , stPeerStatistics                :: !(Map NT.EndPointAddress PeerStatistics)
       -- | How many peers are connected.
-    , stPeers :: !(Metrics.Gauge m)
+    , stPeers                         :: !(Metrics.Gauge m)
       -- | Average number of remotely-initiated handlers per peer.
       --   Also track the average of the number of handlers squared, so we
       --   can quickly compute the variance.
-    , stRunningHandlersRemoteAverage :: !(Double, Double)
+    , stRunningHandlersRemoteAverage  :: !(Double, Double)
       -- | Average number of locally-initiated handlers per peer.
       --   Also track the average of the number of handlers squared, so we
       --   can quickly compute the variance.
-    , stRunningHandlersLocalAverage :: !(Double, Double)
+    , stRunningHandlersLocalAverage   :: !(Double, Double)
       -- | Handlers which finished normally. Distribution is on their
       --   running time.
-    , stHandlersFinishedNormally :: !(Metrics.Distribution m)
+    , stHandlersFinishedNormally      :: !(Metrics.Distribution m)
       -- | Handlers which finished exceptionally. Distribution is on their
       --   running time.
     , stHandlersFinishedExceptionally :: !(Metrics.Distribution m)
@@ -252,7 +256,7 @@ data PeerStatistics = PeerStatistics {
       pstRunningHandlersRemote :: !Int
       -- | How many handlers are running right now for locally-iniaiated
       --   bidirectional connections to this peer.
-    , pstRunningHandlersLocal :: !Int
+    , pstRunningHandlersLocal  :: !Int
     }
 
 pstNull :: PeerStatistics -> Bool
@@ -293,7 +297,7 @@ pstRemoveHandler provenance map = case provenance of
         (Just !stats, map') -> (map', pstNull stats)
         -- First component is Nothing only if the peer is not in the map.
         -- That should never happen.
-        _ -> (map, False)
+        _                   -> (map, False)
         where
         updater _ !stats =
             let !stats' = stats { pstRunningHandlersLocal = pstRunningHandlersLocal stats - 1 }
@@ -301,7 +305,7 @@ pstRemoveHandler provenance map = case provenance of
 
     Remote peer _ _ -> case Map.updateLookupWithKey updater peer map of
         (Just !stats, map') -> (map', pstNull stats)
-        _ -> (map, False)
+        _                   -> (map, False)
         where
         updater _ !stats =
             let !stats' = stats { pstRunningHandlersRemote = pstRunningHandlersRemote stats - 1 }
@@ -567,10 +571,10 @@ data ConnectionState peerData m =
 
 instance Show (ConnectionState peerData m) where
     show term = case term of
-        WaitingForPeerData -> "WaitingForPeerData"
-        PeerDataParseFailure -> "PeerDataParseFailure"
-        WaitingForHandshake _ _ -> "WaitingForHandshake"
-        HandshakeFailure -> "HandshakeFailure"
+        WaitingForPeerData          -> "WaitingForPeerData"
+        PeerDataParseFailure        -> "PeerDataParseFailure"
+        WaitingForHandshake _ _     -> "WaitingForHandshake"
+        HandshakeFailure            -> "HandshakeFailure"
         FeedingApplicationHandler _ -> "FeedingApplicationHandler"
 
 data PeerState peerData =
@@ -960,7 +964,7 @@ nodeDispatcher node handlerIn handlerInOut =
                               -- In any case, say the handshake failed so that
                               -- subsequent data is ignored.
                               Nothing -> do
-                                  logDebug $ sformat ("got unknown nonce " % shown) nonce
+                                  logWarning $ sformat ("got unknown nonce " % shown) nonce
                                   return $ state {
                                         csConnections = Map.insert connid (peer, HandshakeFailure) (csConnections state)
                                       }
@@ -1017,7 +1021,7 @@ nodeDispatcher node handlerIn handlerInOut =
             -- Removing it from the peers map is more involved.
             let peersUpdater existing = case existing of
                     GotPeerData peerData neset -> case NESet.delete connid neset of
-                        Nothing -> Nothing
+                        Nothing     -> Nothing
                         Just neset' -> Just (GotPeerData peerData neset')
                     ExpectingPeerData neset mleader -> case NESet.delete connid neset of
                         Nothing -> Nothing
@@ -1027,7 +1031,7 @@ nodeDispatcher node handlerIn handlerInOut =
                                 -- The connection which is giving the peer data
                                 -- has closed! That's ok, just forget about it
                                 -- and the partial decode of that data.
-                                True -> Just (ExpectingPeerData neset' Nothing)
+                                True  -> Just (ExpectingPeerData neset' Nothing)
                                 False -> Just (ExpectingPeerData neset' mleader)
             let state' = state {
                       csConnections = Map.delete connid (csConnections state)
@@ -1050,7 +1054,7 @@ nodeDispatcher node handlerIn handlerInOut =
                 -- This is a network-transport bug, but we're defensive: will
                 -- clean up the state and plug the input channels anyway.
                 let connids = case it of
-                        GotPeerData _ neset -> NESet.toList neset
+                        GotPeerData _ neset       -> NESet.toList neset
                         ExpectingPeerData neset _ -> NESet.toList neset
                 logError $ sformat ("still have " % shown % " connections") (length connids)
                 -- For every connection to that peer we'll plug the channel with
@@ -1246,14 +1250,22 @@ withInOutChannel node@Node{nodeState} nodeid@(NodeId peer) action = do
     -- An exception may be thrown after the connection is established but
     -- before we register, but that's OK, as disconnectFromPeer is forgiving
     -- about this.
-    let action' (ChannelOut conn) = do
+    let action' conn = do
             let provenance = Local peer (Just (nonce, peerDataVar, NT.bundle conn, channel))
-            let action' :: ChannelOut m -> m a
-                action' = action peerDataVar channel
-            promise <- spawnHandler nodeState provenance (action peerDataVar channel (ChannelOut conn))
+            promise <- spawnHandler nodeState provenance $ do
+                -- It's essential that we only send the handshake SYN inside
+                -- the handler, because at this point the nonce is guaranteed
+                -- to be known in the node state. If we sent the handhsake
+                -- before 'spawnHandler' we risk (although it's highly unlikely)
+                -- receiving the ACK before the nonce is put into the state.
+                -- This isn't so unlikely in the case of self-connections.
+                outcome <- NT.send conn [controlHeaderBidirectionalSyn nonce]
+                case outcome of
+                    Left err -> throw err
+                    Right _  -> action peerDataVar channel (ChannelOut conn)
             wait promise
-    bracket (connectInOutChannel node nodeid nonce)
-            (\(ChannelOut conn) -> disconnectFromPeer node nodeid conn)
+    bracket (connectToPeer node nodeid)
+            (\conn -> disconnectFromPeer node nodeid conn)
             action'
 
 -- | Create, use, and tear down a unidirectional channel to a peer identified
@@ -1309,7 +1321,7 @@ disconnectFromPeer
     -> NodeId
     -> NT.Connection m
     -> m ()
-disconnectFromPeer Node{nodeState} nodeid@(NodeId peer) conn = do
+disconnectFromPeer node@Node{nodeState} nodeid@(NodeId peer) conn =
     bracketWithException startClosing finishClosing (const (NT.close conn))
 
     where
@@ -1420,7 +1432,7 @@ connectToPeer
     => Node packingType peerData m
     -> NodeId
     -> m (NT.Connection m)
-connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} nodeid@(NodeId peer) = do
+connectToPeer node@Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} nodeid@(NodeId peer) = do
     conn <- establish
     sendPeerDataIfNecessary conn
     return conn
@@ -1436,7 +1448,7 @@ connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} nodei
         -- Somebody else sent it, so we can proceed.
         False -> return ()
         -- We are responsible for sending it.
-        True -> sendPeerData conn
+        True  -> sendPeerData conn
 
     sendPeerData conn = do
         let serializedPeerData = Message.packMsg nodePackingType nodePeerData
@@ -1512,7 +1524,7 @@ connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} nodei
 
         case mconn of
             -- Throwing the error will induce the bracket resource releaser
-            Left err -> throw err
+            Left err   -> throw err
             Right conn -> return conn
 
     -- Update the OutboundConnectionState at this peer to no longer show
@@ -1550,7 +1562,7 @@ connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} nodei
                                   return $ Just (ComingUp (n - 1) excl')
                           let established' = case merr of
                                   Nothing -> established + 1
-                                  Just _ -> established
+                                  Just _  -> established
                           return . Just $ Stable comingUp' established' goingDown transmission
 
                 _ -> throw (InternalError "finishConnecting : impossible")
@@ -1604,28 +1616,6 @@ connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} nodei
                 readSharedExclusive excl
                 startConnecting
             Right () -> return ()
-
--- | Connect to a peer given by a 'NodeId' bidirectionally.
-connectInOutChannel
-    :: ( Mockable Channel.Channel m
-       , Mockable Throw m
-       , Mockable Bracket m
-       , Mockable SharedAtomic m
-       , Mockable SharedExclusive m
-       , Message.Packable packingType peerData
-       , WithLogger m
-       )
-    => Node packingType peerData m
-    -> NodeId
-    -> Nonce
-    -> m (ChannelOut m)
-connectInOutChannel node peer nonce = do
-    conn <- connectToPeer node peer
-    outcome <- NT.send conn [controlHeaderBidirectionalSyn nonce]
-    case outcome of
-        Left err -> throw err
-        Right _ -> return ()
-    return (ChannelOut conn)
 
 -- | Connect to a peer given by a 'NodeId' unidirectionally.
 connectOutChannel
