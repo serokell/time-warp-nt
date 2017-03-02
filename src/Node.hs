@@ -42,7 +42,7 @@ module Node (
     ) where
 
 import           Control.Exception          (SomeException)
-import           Control.Monad              (unless)
+import           Control.Monad              (unless, when)
 import           Control.Monad.Fix          (MonadFix)
 import qualified Data.Binary.Get            as Bin
 import qualified Data.ByteString            as BS
@@ -135,7 +135,7 @@ data SendActions packing peerData m = SendActions {
 
 data ConversationActions body rcv m = ConversationActions {
        -- | Send a message within the context of this conversation
-       send     :: body -> m ()
+       send :: body -> m ()
 
        -- | Receive a message within the context of this conversation.
        --   'Nothing' means end of input (peer ended conversation).
@@ -291,10 +291,8 @@ node transport prng packing peerData k = do
         ; let nodeUnit = Node nId endPoint (LL.nodeStatistics llnode)
         ; let NodeAction listeners act = k nodeUnit
           -- Index the listeners by message name, for faster lookup.
-          -- TODO: report conflicting names, or statically eliminate them using
-          -- DataKinds and TypeFamilies.
         ; let listenerIndex :: ListenerIndex packing peerData m
-              (listenerIndex, _conflictingNames) = makeListenerIndex listeners
+              (listenerIndex, conflictingNames) = makeListenerIndex listeners
         ; llnode <- LL.startNode
               packing
               peerData
@@ -304,6 +302,9 @@ node transport prng packing peerData k = do
               (handlerInOut llnode listenerIndex)
         ; let sendActions = nodeSendActions llnode packing
         }
+    when (not $ null conflictingNames) $
+        logError $ sformat ("Conflicting listeners registered: "%shown)
+                   conflictingNames
     let unexceptional = do
             t <- act sendActions
             logNormalShutdown
@@ -351,8 +352,11 @@ node transport prng packing peerData k = do
                             Input msgBody -> do
                                 action peerData peerId sendActions msgBody
                     -- If it's a conversation listener, then that's an error, no?
-                    Just (ListenerActionConversation _) -> error ("handlerIn : wrong listener type. Expected unidirectional for " ++ show msgName)
-                    Nothing -> error ("handlerIn : no listener for " ++ show msgName)
+                    Just (ListenerActionConversation _) -> logDebug $
+                        sformat ("handlerIn : wrong listener type. Expected\
+                        \unidirectional for "%shown) msgName
+                    Nothing -> logDebug $
+                        sformat ("handlerIn : no listener for "%shown) msgName
 
     -- Handle incoming data from a bidirectional connection: try to read the
     -- message name, then choose a listener and fork a thread to run it.
@@ -375,8 +379,11 @@ node transport prng packing peerData k = do
                     Just (ListenerActionConversation action) ->
                         let cactions = nodeConversationActions nodeUnit peerId packing inchan outchan
                         in  action peerData peerId cactions
-                    Just (ListenerActionOneMsg _) -> error ("handlerInOut : wrong listener type. Expected bidirectional for " ++ show msgName)
-                    Nothing -> error ("handlerInOut : no listener for " ++ show msgName)
+                    Just (ListenerActionOneMsg _) ->  logDebug $
+                        sformat ("handlerInOut : wrong listener type. Expected\
+                        \bidirectional for "%shown) msgName
+                    Nothing -> logDebug $
+                        sformat ("handlerInOut : no listener for "%shown) msgName
 
 recvNext
     :: ( Mockable Channel.Channel m, Unpackable packing thing )
