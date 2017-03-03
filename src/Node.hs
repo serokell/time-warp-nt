@@ -287,12 +287,13 @@ node
        )
     => NT.Transport m
     -> StdGen
+    -> NT.RateLimiting
     -> packing
     -> peerData
     -> LL.NodeEnvironment m
     -> (Node m -> NodeAction packing peerData m t)
     -> m t
-node transport prng packing peerData nodeEnv k = do
+node transport prng rateLimiting packing peerData nodeEnv k = do
     rec { let nId = LL.nodeId llnode
         ; let endPoint = LL.nodeEndPoint llnode
         ; let nodeUnit = Node nId endPoint (LL.nodeStatistics llnode)
@@ -308,6 +309,7 @@ node transport prng packing peerData nodeEnv k = do
               transport
               prng
               nodeEnv
+              rateLimiting
               (handlerIn listenerIndex sendActions)
               (handlerInOut llnode listenerIndex)
         ; let sendActions = nodeSendActions llnode packing

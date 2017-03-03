@@ -173,6 +173,7 @@ data Node packingType peerData (m :: * -> *) = Node {
      , nodeState            :: SharedAtomicT m (NodeState peerData m)
      , nodePackingType      :: packingType
      , nodePeerData         :: peerData
+     , nodeRateLimiting     :: NT.RateLimiting
      }
 
 nodeId :: Node packingType peerData m -> NodeId
@@ -561,12 +562,14 @@ startNode
     -> StdGen
     -- ^ A source of randomness, for generating nonces.
     -> NodeEnvironment m
+    -> NT.RateLimiting
+    -- ^ Rate limiting policy.
     -> (peerData -> NodeId -> ChannelIn m -> m ())
     -- ^ Handle incoming unidirectional connections.
     -> (peerData -> NodeId -> ChannelIn m -> ChannelOut m -> m ())
     -- ^ Handle incoming bidirectional connections.
     -> m (Node packingType peerData m)
-startNode packingType peerData transport prng nodeEnv handlerIn handlerOut = do
+startNode packingType peerData transport prng nodeEnv rateLimiting handlerIn handlerOut = do
     mEndPoint <- NT.newEndPoint transport
     case mEndPoint of
         Left err -> throw err
@@ -580,6 +583,7 @@ startNode packingType peerData transport prng nodeEnv handlerIn handlerOut = do
                           , nodeState            = sharedState
                           , nodePackingType      = packingType
                           , nodePeerData         = peerData
+                          , nodeRateLimiting     = rateLimiting
                           }
                 ; dispatcherThread <- async $
                       nodeDispatcher node handlerIn handlerOut

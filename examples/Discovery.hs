@@ -24,7 +24,7 @@ import           Mockable.Exception                   (finally)
 import           Mockable.Production
 import           Network.Discovery.Abstract
 import qualified Network.Discovery.Transport.Kademlia as K
-import           Network.Transport.Abstract           (Transport (..))
+import           Network.Transport.Abstract           (Transport (..), noRateLimiting)
 import           Network.Transport.Concrete           (concrete)
 import qualified Network.Transport.TCP                as TCP
 import           Node
@@ -93,7 +93,7 @@ makeNode transport i = do
     let prng1 = mkStdGen (2 * i)
     let prng2 = mkStdGen ((2 * i) + 1)
     liftIO . putStrLn $ "Starting node " ++ show i
-    fork $ node transport prng1 BinaryP (B8.pack "my peer data!") defaultNodeEnvironment $ \node' ->
+    fork $ node transport prng1 noRateLimiting BinaryP (B8.pack "my peer data!") defaultNodeEnvironment $ \node' ->
         NodeAction (listeners . nodeId $ node') $ \sactions -> do
             liftIO . putStrLn $ "Making discovery for node " ++ show i
             discovery <- K.kademliaDiscovery kademliaConfig initialPeer (nodeEndPointAddress node')
