@@ -111,11 +111,8 @@ data QDisc m t = QDisc {
 
 -- | Rate-limiting settings
 data RateLimiting = RateLimiting
-    { rlMaxHandlersPerClient  :: !(Maybe Int)
-    , rlMaxLiveBytesPerClient :: !(Maybe Int)
-    , rlMaxHandlersTotal      :: !(Maybe Int)
-    , rlMaxLiveBytesTotal     :: !(Maybe Int)
+    { rlMaxLiveBytesPerClient :: !(Maybe Int)
     }
 
 noRateLimiting :: RateLimiting
-noRateLimiting = RateLimiting Nothing Nothing Nothing Nothing
+noRateLimiting = RateLimiting Nothing

@@ -40,7 +40,7 @@ module Node.Internal (
   ) where
 
 import           Control.Exception             hiding (bracket, catch, finally, throw)
-import           Control.Monad                 (forM_, forM, when)
+import           Control.Monad                 (forM_, forM, void, when)
 import           Control.Monad.Fix             (MonadFix)
 import           Data.Int                      (Int64)
 import           Data.Binary                   as Bin
@@ -240,7 +240,7 @@ data Statistics m = Statistics {
       --   locally, i.e. corresponding to bidirectional connections.
     , stRunningHandlersLocal :: !(Metrics.Gauge m)
       -- | Statistics for each peer.
-    , stPeerStatistics :: !(Map NT.EndPointAddress (SharedAtomicT m PeerStatistics))
+    , stPeerStatistics :: !(Map NT.EndPointAddress (SharedAtomicT m (PeerStatistics m)))
       -- | How many peers are connected.
     , stPeers :: !(Metrics.Gauge m)
       -- | Average number of remotely-initiated handlers per peer.
@@ -278,7 +278,7 @@ stRunningHandlersLocalVariance statistics = avg2 - (avg*avg)
     (avg, avg2) = stRunningHandlersLocalAverage statistics
 
 -- | Statistics about a given peer.
-data PeerStatistics = PeerStatistics {
+data PeerStatistics m = PeerStatistics {
       -- | How many handlers are running right now in response to connections
       --   from this peer (whether unidirectional or remotely-initiated
       --   bidirectional).
@@ -289,9 +289,13 @@ data PeerStatistics = PeerStatistics {
       -- | How many bytes have been received by running handlers for this
       --   peer.
     , pstLiveBytes :: !Int
+      -- | A 'SharedAtomic' that acts as a lock for rate-limiting.
+      -- While the peer has too many in-flight bytes or active
+      -- handlers, this will be held.
+    , pstLock :: !(SharedAtomicT m ())
     }
 
-pstNull :: PeerStatistics -> Bool
+pstNull :: PeerStatistics m -> Bool
 pstNull PeerStatistics{..} =
     let remote = pstRunningHandlersRemote
         local = pstRunningHandlersLocal
@@ -299,14 +303,22 @@ pstNull PeerStatistics{..} =
 
 stIncrBytes
     :: (Mockable SharedAtomic m)
-    => NT.EndPointAddress -> Int -> Statistics m -> m ()
-stIncrBytes peer bytes stats =
+    => NT.EndPointAddress -> Maybe Int -> Int -> Statistics m -> m ()
+stIncrBytes peer mMaxBytes bytes stats =
     case Map.lookup peer (stPeerStatistics stats) of
       Nothing -> return ()
-      Just peerStats -> modifySharedAtomic peerStats $ \ps ->
-          return (pstIncrBytes bytes ps, ())
+      Just peerStats -> do
+          modifySharedAtomic peerStats $ \ps -> do
+              let ps' = pstIncrBytes bytes ps
+              case mMaxBytes of
+                  Nothing -> return ()
+                  Just maxBytes -> if maxBytes < pstLiveBytes ps'
+                                   then void (tryPutSharedAtomic (pstLock ps') ())
+                                   else void (tryTakeSharedAtomic (pstLock ps'))
+              return (ps', ())
 
-pstIncrBytes :: Int -> PeerStatistics -> PeerStatistics
+
+pstIncrBytes :: Int -> PeerStatistics m -> PeerStatistics m
 pstIncrBytes bytes peerStatistics = peerStatistics {
       pstLiveBytes = pstLiveBytes peerStatistics + bytes
     }
@@ -316,13 +328,14 @@ pstIncrBytes bytes peerStatistics = peerStatistics {
 pstAddHandler
     :: (Mockable SharedAtomic m)
     => HandlerProvenance peerData m t
-    -> Map NT.EndPointAddress (SharedAtomicT m PeerStatistics)
-    -> m (Map NT.EndPointAddress (SharedAtomicT m PeerStatistics), Bool)
+    -> Map NT.EndPointAddress (SharedAtomicT m (PeerStatistics m))
+    -> m (Map NT.EndPointAddress (SharedAtomicT m (PeerStatistics m)), Bool)
 pstAddHandler provenance map = case provenance of
 
     Local peer _ -> case Map.lookup peer map of
         Nothing ->
-            newSharedAtomic (PeerStatistics 0 1 0) >>= \peerStatistics ->
+            newSharedAtomic () >>= \lock ->
+            newSharedAtomic (PeerStatistics 0 1 0 lock) >>= \peerStatistics ->
             return (Map.insert peer peerStatistics map, True)
         Just !statsVar -> modifySharedAtomic statsVar $ \stats ->
             let !stats' = stats { pstRunningHandlersLocal = pstRunningHandlersLocal stats + 1 }
@@ -330,7 +343,8 @@ pstAddHandler provenance map = case provenance of
 
     Remote peer _ _ -> case Map.lookup peer map of
         Nothing ->
-            newSharedAtomic (PeerStatistics 1 0 0) >>= \peerStatistics ->
+            newSharedAtomic () >>= \lock ->
+            newSharedAtomic (PeerStatistics 1 0 0 lock) >>= \peerStatistics ->
             return (Map.insert peer peerStatistics map, True)
         Just !statsVar -> modifySharedAtomic statsVar $ \stats ->
             let !stats' = stats { pstRunningHandlersLocal = pstRunningHandlersRemote stats + 1 }
@@ -341,8 +355,8 @@ pstAddHandler provenance map = case provenance of
 pstRemoveHandler
     :: (WithLogger m, Mockable SharedAtomic m)
     => HandlerProvenance peerData m t
-    -> Map NT.EndPointAddress (SharedAtomicT m PeerStatistics)
-    -> m (Map NT.EndPointAddress (SharedAtomicT m PeerStatistics), Bool)
+    -> Map NT.EndPointAddress (SharedAtomicT m (PeerStatistics m))
+    -> m (Map NT.EndPointAddress (SharedAtomicT m (PeerStatistics m)), Bool)
 pstRemoveHandler provenance map = case provenance of
 
     Local peer _ -> case Map.lookup peer map of
@@ -959,7 +973,7 @@ nodeDispatcher node handlerIn handlerInOut =
                           channel <- Channel.newChannel
                           let provenance = Remote peer connid (ChannelIn channel)
                           let handler = handlerIn peerData (NodeId peer) (ChannelIn channel)
-                          (_, incrBytes) <- spawnHandler nstate provenance handler
+                          (_, incrBytes) <- spawnHandler nstate (nodeRateLimiting node) provenance handler
                           Channel.writeChannel channel (Just ws)
                           incrBytes $ BS.length ws
                           return $ state {
@@ -1001,7 +1015,7 @@ nodeDispatcher node handlerIn handlerInOut =
                                             cleanup
                                             respondAndHandle
                           -- Establish the other direction in a separate thread.
-                          (_, incrBytes) <- spawnHandler nstate provenance handler
+                          (_, incrBytes) <- spawnHandler nstate (nodeRateLimiting node) provenance handler
                           let bss = LBS.toChunks ws'
                           Channel.writeChannel channel (Just (BS.concat bss))
                           incrBytes $ sum (fmap BS.length bss)
@@ -1202,10 +1216,11 @@ spawnHandler
        , WithLogger m
        , MonadFix m )
     => SharedAtomicT m (NodeState peerData m)
+    -> NT.RateLimiting
     -> HandlerProvenance peerData m (ChannelIn m)
     -> m t
     -> m (Promise m t, Int -> m ())
-spawnHandler stateVar provenance action =
+spawnHandler stateVar rateLimit provenance action =
     modifySharedAtomic stateVar $ \nodeState -> do
         totalBytes <- newSharedAtomic 0
         -- Spawn the thread to get a 'SomeHandler'.
@@ -1234,7 +1249,7 @@ spawnHandler stateVar provenance action =
 
             incrBytes !n = do
                 nodeState <- readSharedAtomic stateVar
-                stIncrBytes (handlerProvenancePeer provenance) n (_nodeStateStatistics nodeState)
+                stIncrBytes (handlerProvenancePeer provenance) (NT.rlMaxLiveBytesPerClient rateLimit) n (_nodeStateStatistics nodeState)
                 modifySharedAtomic totalBytes $ \(!m) -> return (m + n, ())
 
         statistics' <- stAddHandler provenance (_nodeStateStatistics nodeState)
@@ -1277,7 +1292,7 @@ spawnHandler stateVar provenance action =
                         }
             -- Decrement the live bytes by the total bytes received, and
             -- remove the handler.
-            stIncrBytes (handlerProvenancePeer provenance) (-totalBytes) $ _nodeStateStatistics nodeState
+            stIncrBytes (handlerProvenancePeer provenance) (NT.rlMaxLiveBytesPerClient rateLimit) (-totalBytes) $ _nodeStateStatistics nodeState
             statistics' <-
                 stRemoveHandler provenance elapsed outcome $
                 _nodeStateStatistics nodeState
@@ -1330,7 +1345,7 @@ withInOutChannel
     -> NodeId
     -> (SharedExclusiveT m peerData -> ChannelIn m -> ChannelOut m -> m a)
     -> m a
-withInOutChannel node@Node{nodeEnvironment, nodeState} nodeid@(NodeId peer) action = do
+withInOutChannel node@Node{nodeEnvironment, nodeRateLimiting, nodeState} nodeid@(NodeId peer) action = do
     nonce <- modifySharedAtomic nodeState $ \nodeState -> do
                let (nonce, !prng') = random (_nodeStateGen nodeState)
                pure (nodeState { _nodeStateGen = prng' }, nonce)
@@ -1347,7 +1362,7 @@ withInOutChannel node@Node{nodeEnvironment, nodeState} nodeid@(NodeId peer) acti
     -- about this.
     let action' conn = do
             rec { let provenance = Local peer (Just (nonce, peerDataVar, NT.bundle conn, timeoutPromise, channel))
-                ; (promise, _) <- spawnHandler nodeState provenance $ do
+                ; (promise, _) <- spawnHandler nodeState nodeRateLimiting provenance $ do
                       -- It's essential that we only send the handshake SYN inside
                       -- the handler, because at this point the nonce is guaranteed
                       -- to be known in the node state. If we sent the handhsake
@@ -1386,9 +1401,9 @@ withOutChannel
     -> NodeId
     -> (ChannelOut m -> m a)
     -> m a
-withOutChannel node@Node{nodeState} nodeid@(NodeId peer) action = do
+withOutChannel node@Node{nodeState, nodeRateLimiting} nodeid@(NodeId peer) action = do
     let provenance = Local peer Nothing
-    (promise, _) <- spawnHandler nodeState provenance $
+    (promise, _) <- spawnHandler nodeState nodeRateLimiting provenance $
         bracket (connectOutChannel node nodeid)
                 (\(ChannelOut conn) -> disconnectFromPeer node nodeid conn)
                 action

@@ -6,6 +6,7 @@
 module Network.QDisc.Fair (
 
       fairQDisc
+    , blockingQDisc
 
     ) where
 
@@ -14,6 +15,16 @@ import Control.Concurrent (threadDelay)
 import Network.Transport (EndPointAddress)
 import Network.Transport.TCP (QDisc(..))
 import Data.Time.Units (Microsecond)
+
+blockingQDisc :: (EndPointAddress -> IO ()) -> IO (QDisc t)
+blockingQDisc waitForUnblock = do
+    fqd <- newFairQDisc
+    return QDisc {
+          qdiscEnqueue = \addr _ t -> do
+                  waitForUnblock addr
+                  writeFairQDisc fqd t
+        , qdiscDequeue = readFairQDisc fqd
+        }
 
 -- | Make a fair 'QDisc'. It's called fair, but it can also be unfair if you
 --   want it to be, by having some 'EndPointAddress's delay before writing.
