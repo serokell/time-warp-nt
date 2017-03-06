@@ -37,6 +37,7 @@ module Node.Internal (
     withInOutChannel,
     writeChannel,
     Timeout(..)
+    rateLimitingTransport
   ) where
 
 import           Control.Exception             hiding (bracket, catch, finally, throw)
@@ -69,8 +70,10 @@ import           Mockable.SharedAtomic
 import           Mockable.SharedExclusive
 import           Mockable.CurrentTime          (CurrentTime, currentTime)
 import qualified Mockable.Metrics              as Metrics
+import qualified Network.QDisc.Fair            as QD
 import qualified Network.Transport             as NT (EventErrorCode (EventConnectionLost, EventEndPointFailed, EventTransportFailed))
 import qualified Network.Transport.Abstract    as NT
+import           Network.Transport.TCP         (QDisc)
 import           System.Random                 (Random, StdGen, random)
 import           System.Wlog                   (WithLogger, logDebug, logError, logWarning)
 import qualified Node.Message                  as Message
@@ -1762,3 +1765,26 @@ connectOutChannel node peer = do
         Left err -> throw err
         Right () -> return ()
     return (ChannelOut conn)
+
+rateLimitingTransport
+    :: (Mockable SharedAtomic m, WithLogger m)
+    => (forall t. m t -> IO t)
+    -> (forall t. IO t -> m t)
+    -> (QDisc t -> m (NT.Transport m))
+    -> Node packingType peerData m
+    -> m (NT.Transport m)
+rateLimitingTransport lowerIO liftIO createTransport node = do
+    qDisc <- liftIO $ QD.blockingQDisc (lowerIO . usePeerLock node)
+    createTransport qDisc
+
+usePeerLock
+    :: ( Mockable SharedAtomic m
+       , WithLogger m)
+    => Node packagingType peerData m -> NT.EndPointAddress -> m ()
+usePeerLock node peer = do
+    Statistics{stPeerStatistics} <- nodeStatistics node
+    case Map.lookup peer stPeerStatistics of
+        Nothing -> logError $ sformat ("Could not find PeerStatistics for "%shown) peer
+        Just peerStats -> do
+            ps <- readSharedAtomic peerStats
+            readSharedAtomic (pstLock ps)

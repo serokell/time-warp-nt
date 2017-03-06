@@ -42,6 +42,7 @@ module Node (
     , LL.PeerStatistics(..)
 
     , LL.Timeout(..)
+    , LL.rateLimitingTransport
 
     ) where
 
