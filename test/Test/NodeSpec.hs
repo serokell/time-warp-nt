@@ -83,13 +83,13 @@ spec = describe "Node" $ do
                                 _ <- timeout "server sending response" 30000000 (send cactions (Parcel i (Payload 32)))
                                 return ()
 
-                let server = node transport serverGen NT.noRateLimiting BinaryP ("server" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
+                let server = node (const $ return transport) serverGen NT.noRateLimiting BinaryP ("server" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
                         NodeAction [listener] $ \sendActions -> do
                             putSharedExclusive serverAddressVar (nodeId _node)
                             takeSharedExclusive clientFinished
                             putSharedExclusive serverFinished ()
 
-                let client = node transport clientGen NT.noRateLimiting BinaryP ("client" :: String, 24 :: Int) defaultNodeEnvironment $ \_node ->
+                let client = node (const $ return transport) clientGen NT.noRateLimiting BinaryP ("client" :: String, 24 :: Int) defaultNodeEnvironment $ \_node ->
                         NodeAction [listener] $ \sendActions -> do
                             serverAddress <- readSharedExclusive serverAddressVar
                             forM_ [1..attempts] $ \i -> withConnectionTo sendActions serverAddress $ \peerData cactions -> do
@@ -129,7 +129,7 @@ spec = describe "Node" $ do
                                 _ <- send cactions (Parcel i (Payload 32))
                                 return ()
 
-                node transport gen NT.noRateLimiting BinaryP ("some string" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
+                node (const $ return transport) gen NT.noRateLimiting BinaryP ("some string" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
                     NodeAction [listener] $ \sendActions -> do
                         forM_ [1..attempts] $ \i -> withConnectionTo sendActions (nodeId _node) $ \peerData cactions -> do
                             pd <- timeout "client waiting for peer data" 30000000 peerData

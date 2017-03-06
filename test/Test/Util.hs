@@ -308,7 +308,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
     clientFinished <- newSharedExclusive
     serverFinished <- newSharedExclusive
 
-    let server = node transport prng1 noRateLimiting BinaryP () defaultNodeEnvironment $ \serverNode -> do
+    let server = node (const $ return transport) prng1 noRateLimiting BinaryP () defaultNodeEnvironment $ \serverNode -> do
             NodeAction listeners $ \_ -> do
                 -- Give our address to the client.
                 putSharedExclusive serverAddressVar (nodeId serverNode)
@@ -319,7 +319,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
                 -- Allow the client to stop.
                 putSharedExclusive serverFinished ()
 
-    let client = node transport prng2 noRateLimiting BinaryP () defaultNodeEnvironment $ \clientNode ->
+    let client = node (const $ return transport) prng2 noRateLimiting BinaryP () defaultNodeEnvironment $ \clientNode ->
             NodeAction [] $ \sendActions -> do
                 serverAddress <- takeSharedExclusive serverAddressVar
                 void . forConcurrently workers $ \worker ->

@@ -285,7 +285,7 @@ node
        , MonadFix m, Serializable packing MessageName, WithLogger m
        , Serializable packing peerData
        )
-    => NT.Transport m
+    => (LL.Node packing peerData m -> m (NT.Transport m))
     -> StdGen
     -> NT.RateLimiting
     -> packing
@@ -293,7 +293,7 @@ node
     -> LL.NodeEnvironment m
     -> (Node m -> NodeAction packing peerData m t)
     -> m t
-node transport prng rateLimiting packing peerData nodeEnv k = do
+node createTransport prng rateLimiting packing peerData nodeEnv k = do
     rec { let nId = LL.nodeId llnode
         ; let endPoint = LL.nodeEndPoint llnode
         ; let nodeUnit = Node nId endPoint (LL.nodeStatistics llnode)
@@ -303,6 +303,7 @@ node transport prng rateLimiting packing peerData nodeEnv k = do
           -- DataKinds and TypeFamilies.
         ; let listenerIndex :: ListenerIndex packing peerData m
               (listenerIndex, _conflictingNames) = makeListenerIndex listeners
+        ; transport <- createTransport llnode
         ; llnode <- LL.startNode
               packing
               peerData

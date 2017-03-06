@@ -90,7 +90,7 @@ main = runProduction $ do
     let prng4 = mkStdGen 3
 
     liftIO . putStrLn $ "Starting nodes"
-    node transport prng1 noRateLimiting BinaryP (B8.pack "I am node 1") defaultNodeEnvironment $ \node1 ->
+    node  (const $ return transport) prng1 noRateLimiting BinaryP (B8.pack "I am node 1") defaultNodeEnvironment $ \node1 ->
         NodeAction (listeners . nodeId $ node1) $ \sactions1 -> do
             _ <- setupMonitor 8000 runProduction node1
             node transport prng2 noRateLimiting BinaryP (B8.pack "I am node 2") defaultNodeEnvironment $ \node2 ->
