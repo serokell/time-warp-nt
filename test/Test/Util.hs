@@ -61,8 +61,8 @@ import           Mockable.SharedExclusive    (newSharedExclusive, putSharedExclu
                                               readSharedExclusive)
 import           Mockable.Exception          (Catch, Throw, catch, throw)
 import           Mockable.Production         (Production (..))
+import           Network.RateLimiting        (rateLimitingUnbounded)
 import qualified Network.Transport           as NT (Transport)
-import           Network.Transport.Abstract  (noRateLimiting)
 import           Network.Transport.Concrete  (concrete)
 import qualified Network.Transport.TCP       as TCP
 import qualified Network.Transport.InMemory  as InMemory
@@ -308,7 +308,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
     clientFinished <- newSharedExclusive
     serverFinished <- newSharedExclusive
 
-    let server = node (const $ return transport) prng1 noRateLimiting BinaryP () defaultNodeEnvironment $ \serverNode -> do
+    let server = node transport prng1 rateLimitingUnbounded BinaryP () defaultNodeEnvironment $ \serverNode -> do
             NodeAction listeners $ \_ -> do
                 -- Give our address to the client.
                 putSharedExclusive serverAddressVar (nodeId serverNode)
@@ -319,7 +319,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
                 -- Allow the client to stop.
                 putSharedExclusive serverFinished ()
 
-    let client = node (const $ return transport) prng2 noRateLimiting BinaryP () defaultNodeEnvironment $ \clientNode ->
+    let client = node transport prng2 rateLimitingUnbounded BinaryP () defaultNodeEnvironment $ \clientNode ->
             NodeAction [] $ \sendActions -> do
                 serverAddress <- takeSharedExclusive serverAddressVar
                 void . forConcurrently workers $ \worker ->

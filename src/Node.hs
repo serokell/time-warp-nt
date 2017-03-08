@@ -42,7 +42,6 @@ module Node (
     , LL.PeerStatistics(..)
 
     , LL.Timeout(..)
-    , LL.rateLimitingTransport
 
     ) where
 
@@ -64,6 +63,7 @@ import           Mockable.Exception
 import qualified Mockable.Metrics           as Metrics
 import           Mockable.SharedAtomic
 import           Mockable.SharedExclusive
+import qualified Network.RateLimiting       as RL
 import qualified Network.Transport.Abstract as NT
 import           Node.Internal              (ChannelIn, ChannelOut)
 import qualified Node.Internal              as LL
@@ -286,15 +286,15 @@ node
        , MonadFix m, Serializable packing MessageName, WithLogger m
        , Serializable packing peerData
        )
-    => (LL.Node packing peerData m -> m (NT.Transport m))
+    => NT.Transport m
     -> StdGen
-    -> NT.RateLimiting
+    -> RL.RateLimiting m
     -> packing
     -> peerData
     -> LL.NodeEnvironment m
     -> (Node m -> NodeAction packing peerData m t)
     -> m t
-node createTransport prng rateLimiting packing peerData nodeEnv k = do
+node transport prng rateLimiting packing peerData nodeEnv k = do
     rec { let nId = LL.nodeId llnode
         ; let endPoint = LL.nodeEndPoint llnode
         ; let nodeUnit = Node nId endPoint (LL.nodeStatistics llnode)
@@ -304,7 +304,6 @@ node createTransport prng rateLimiting packing peerData nodeEnv k = do
           -- DataKinds and TypeFamilies.
         ; let listenerIndex :: ListenerIndex packing peerData m
               (listenerIndex, _conflictingNames) = makeListenerIndex listeners
-        ; transport <- createTransport llnode
         ; llnode <- LL.startNode
               packing
               peerData

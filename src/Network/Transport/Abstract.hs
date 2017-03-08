@@ -10,8 +10,6 @@ module Network.Transport.Abstract
   , Connection(..)
   , Event(..)
   , QDisc(..)
-  , RateLimiting(..)
-  , noRateLimiting
   , NT.ConnectionId
   , NT.ConnectionBundle
   , NT.Reliability(..)
@@ -108,11 +106,3 @@ data QDisc m t = QDisc {
       qdiscDequeue :: m t
     , qdiscEnqueue :: NT.EndPointAddress -> Event -> t -> m ()
     }
-
--- | Rate-limiting settings
-data RateLimiting = RateLimiting
-    { rlMaxLiveBytesPerClient :: !(Maybe Int)
-    }
-
-noRateLimiting :: RateLimiting
-noRateLimiting = RateLimiting Nothing
