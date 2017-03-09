@@ -492,16 +492,19 @@ stRemoveHandler
     => HandlerProvenance peerData m t
     -> Microsecond
     -> Maybe SomeException
+    -> RL.RateLimiting m
     -> Statistics m
     -> m (Statistics m)
-stRemoveHandler !provenance !elapsed !outcome !statistics = case provenance of
+stRemoveHandler !provenance !elapsed !outcome !rateLimiting !statistics = case provenance of
 
     -- TODO: generalize this computation so we can use the same thing for
     -- both local and remote. It's a copy/paste job right now swapping local
     -- for remote.
-    Local !_peer _ -> do
+    Local !peer _ -> do
         (!peerStatistics, !isEndedPeer) <- pstRemoveHandler provenance (stPeerStatistics statistics)
-        when isEndedPeer $ Metrics.decGauge (stPeers statistics)
+        when isEndedPeer $ do
+            Metrics.decGauge (stPeers statistics)
+            removeLock peer
         Metrics.decGauge (stRunningHandlersLocal statistics)
         !npeers <- Metrics.readGauge (stPeers statistics)
         !nhandlers <- Metrics.readGauge (stRunningHandlersLocal statistics)
@@ -516,9 +519,11 @@ stRemoveHandler !provenance !elapsed !outcome !statistics = case provenance of
             , stRunningHandlersLocalAverage = runningHandlersLocalAverage
             }
 
-    Remote !_peer _ _ -> do
+    Remote !peer _ _ -> do
         (!peerStatistics, !isEndedPeer) <- pstRemoveHandler provenance (stPeerStatistics statistics)
-        when isEndedPeer $ Metrics.decGauge (stPeers statistics)
+        when isEndedPeer $ do
+            Metrics.decGauge (stPeers statistics)
+            removeLock peer
         Metrics.decGauge (stRunningHandlersRemote statistics)
         !npeers <- Metrics.readGauge (stPeers statistics)
         !nhandlers <- Metrics.readGauge (stRunningHandlersRemote statistics)
@@ -534,6 +539,10 @@ stRemoveHandler !provenance !elapsed !outcome !statistics = case provenance of
             }
 
     where
+
+    removeLock = case rateLimiting of
+        RL.NoRateLimiting _ -> const (return ())
+        RL.RateLimiting {..} -> rlRemoveLock
 
     -- Convert the elapsed time to a Double and then add it to the relevant
     -- distribution.
@@ -1297,7 +1306,7 @@ spawnHandler stateVar rateLimiting provenance action =
             -- remove the handler.
             stIncrBytes (handlerProvenancePeer provenance) rateLimiting (-totalBytes) $ _nodeStateStatistics nodeState
             statistics' <-
-                stRemoveHandler provenance elapsed outcome $
+                stRemoveHandler provenance elapsed outcome rateLimiting $
                 _nodeStateStatistics nodeState
             return (nodeState' { _nodeStateStatistics = statistics' }, ())
 
