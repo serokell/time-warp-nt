@@ -5,6 +5,7 @@
 module Network.RateLimiting where
 
 import           Control.Monad (void)
+import           Control.Monad.Trans.Class
 import qualified Data.Map.Strict as Map
 import           Formatting (sformat, shown, (%))
 import           Mockable.Class
@@ -27,8 +28,20 @@ data RateLimiting m =
       , rlRemoveLock :: EndPointAddress -> m ()
       }
 
+rlLift :: (Mockable SharedAtomic m, MonadTrans t) => RateLimiting m -> RateLimiting (t m)
+rlLift (NoRateLimiting qDisc) = NoRateLimiting qDisc
+rlLift RateLimiting{..} = RateLimiting
+    { rlQDisc = rlQDisc
+    , rlLockByBytes = \peer bytes -> lift $ rlLockByBytes peer bytes
+    , rlNewLock = lift . rlNewLock
+    , rlRemoveLock = lift . rlRemoveLock
+    }
+
 rateLimitingUnbounded :: Monad m => RateLimiting m
 rateLimitingUnbounded = NoRateLimiting simpleUnboundedQDisc
+
+rateLimitingFair :: Monad m => RateLimiting m
+rateLimitingFair = NoRateLimiting (fairQDisc (const $ return Nothing))
 
 rateLimitingBlocking
     :: ( Mockable SharedAtomic m
