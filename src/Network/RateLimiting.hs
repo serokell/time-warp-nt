@@ -2,7 +2,16 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
-module Network.RateLimiting where
+module Network.RateLimiting
+       ( -- * Types
+         RateLimiting(..)
+       , rlLift
+         -- * Rate-limiting strategies
+       , rateLimitingUnbounded
+       , rateLimitingFair
+       , rateLimitingBlocking
+       , rateLimitingDamping
+       ) where
 
 import           Control.Monad (void)
 import           Control.Monad.Trans.Class
@@ -15,6 +24,11 @@ import           Network.Transport (EndPointAddress)
 import           Network.Transport.TCP (QDisc(..), simpleUnboundedQDisc)
 import           System.Wlog (WithLogger, logWarning)
 
+-- | A rate-limiting strategy.
+--
+-- This includes a 'QDisc' to govern how incoming requests are
+-- enqueued and dequeued, and also the possibility to block or delay
+-- requests from a peer depending on the number of in-flight bytes.
 data RateLimiting m =
       NoRateLimiting !(forall t. IO (QDisc t))
     | RateLimiting
@@ -37,17 +51,28 @@ rlLift RateLimiting{..} = RateLimiting
     , rlRemoveLock = lift . rlRemoveLock
     }
 
+-- | The simplest rate-limiting procedure uses an unbounded queue, and
+-- performs no rate limiting at all.
 rateLimitingUnbounded :: Monad m => RateLimiting m
 rateLimitingUnbounded = NoRateLimiting simpleUnboundedQDisc
 
+-- | Ensures fariness in queueing requests from different peers, but
+-- does no rate-limiting.
 rateLimitingFair :: Monad m => RateLimiting m
 rateLimitingFair = NoRateLimiting (fairQDisc (const $ return Nothing))
 
+-- | A 'RateLimiting' that actually does rate-limiting.
+--
+-- As soon as the number of in-flight bytes (bytes from a request that
+-- has been received but not yet finished) from a given peer passes a
+-- given threshold, further messages from that peer will be blocked,
+-- until the number of in-flight bytes drops below the threshold
+-- again.
 rateLimitingBlocking
     :: ( Mockable SharedAtomic m
        , WithLogger m)
     => (forall t. m t -> IO t)
-    -> Int
+    -> Int -- ^ Maximum in-flight bytes per peer.
     -> m (RateLimiting m)
 rateLimitingBlocking liftIO maxBytesPerPeer = do
     locks <- newSharedAtomic Map.empty
