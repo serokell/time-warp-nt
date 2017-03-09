@@ -18,13 +18,11 @@ import           Control.Monad.Trans.Class
 import qualified Data.Map.Strict as Map
 import           Data.Maybe (isJust, fromJust)
 import           Data.Time.Units (Microsecond)
-import           Formatting (sformat, shown, (%))
 import           Mockable.Class
 import           Mockable.SharedAtomic
 import           Network.QDisc.Fair (fairQDisc)
 import           Network.Transport (EndPointAddress)
 import           Network.Transport.TCP (QDisc(..), simpleUnboundedQDisc)
-import           System.Wlog (WithLogger, logWarning)
 
 -- | A rate-limiting strategy.
 --
@@ -71,8 +69,7 @@ rateLimitingFair = NoRateLimiting (fairQDisc (const $ return Nothing))
 -- until the number of in-flight bytes drops below the threshold
 -- again.
 rateLimitingBlocking
-    :: ( Mockable SharedAtomic m
-       , WithLogger m)
+    :: (Mockable SharedAtomic m)
     => (forall t. m t -> IO t)
     -> Int -- ^ Maximum in-flight bytes per peer.
     -> m (RateLimiting m)
@@ -82,8 +79,7 @@ rateLimitingBlocking liftIO maxBytesPerPeer =
 -- | rate-limiting strategy that can delay or block traffic, depending
 -- on the number of in-flight bytes.
 rateLimitingDamping
-    :: ( Mockable SharedAtomic m
-       , WithLogger m)
+    :: (Mockable SharedAtomic m)
     => (forall t. m t -> IO t)
     -> (Int -> Maybe Microsecond)
     -- ^ Delay, as a function of the number of
@@ -98,18 +94,16 @@ rateLimitingDamping liftIO dampingFunction mThreshold = do
         { rlQDisc = fairQDisc $ \peer -> liftIO $ do
             lockMap <- readSharedAtomic locks
             case Map.lookup peer lockMap of
-                Nothing -> do
-                    logWarning $ sformat ("rateLimitingDamping.rlQDisc: could not find peer "%shown%" in rlLocks") peer
-                    return Nothing
+                Nothing -> return Nothing
                 Just lock -> readSharedAtomic lock
         , rlLockByBytes = \peer bytes -> do
             lockMap <- readSharedAtomic locks
             case Map.lookup peer lockMap of
-                Nothing ->
-                    logWarning $ sformat ("rateLimitingDamping.rlLockByBytes: could not find peer "%shown%" in rlLocks") peer
-                Just mvar -> if isJust mThreshold && fromJust mThreshold < bytes
-                             then void (tryTakeSharedAtomic mvar)
-                             else void (tryPutSharedAtomic mvar (dampingFunction bytes))
+                Nothing -> return ()
+                Just mvar ->
+                    if isJust mThreshold && fromJust mThreshold < bytes
+                        then void (tryTakeSharedAtomic mvar)
+                        else void (tryPutSharedAtomic mvar (dampingFunction bytes))
         , rlNewLock = \peer -> void $ modifySharedAtomic locks $ \lockMap -> do
                 newLock <- newSharedAtomic Nothing
                 return (Map.insert peer newLock lockMap, ())
