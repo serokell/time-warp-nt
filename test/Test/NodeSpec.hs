@@ -53,9 +53,7 @@ spec = describe "Node" $ do
 
     let mkTransportAndRateLimiting n mkRl = runIO $ do
             rateLimiting <- runProduction mkRl
-            transport <- case rateLimiting of
-                RL.NoRateLimiting qDisc -> makeTCPTransport "0.0.0.0" "127.0.0.1" n qDisc
-                RL.RateLimiting {..} -> makeTCPTransport "0.0.0.0" "127.0.0.1" n rlQDisc
+            transport <- makeTCPTransport "0.0.0.0" "127.0.0.1" n (RL.rlQDisc rateLimiting)
             return (transport, rateLimiting)
     let tcpTransportOnePlace = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10342" simpleOnePlaceQDisc
     let tcpTransportFair = mkTransportAndRateLimiting "10343" (return RL.noRateLimitingFair) -- runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10343" (fairQDisc (const (return Nothing)))

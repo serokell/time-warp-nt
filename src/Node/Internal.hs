@@ -259,14 +259,11 @@ stIncrBytes
 stIncrBytes peer rateLimiting bytes stats =
     case Map.lookup peer (stPeerStatistics stats) of
       Nothing -> return ()
-      Just peerStats -> do
+      Just peerStats ->
           modifySharedAtomic peerStats $ \ps -> do
               let ps' = pstIncrBytes bytes ps
-              case rateLimiting of
-                  RL.NoRateLimiting _ -> return ()
-                  RL.RateLimiting {..} -> rlLockByBytes peer (pstLiveBytes ps')
+              RL.rlAdjustLock rateLimiting peer ps'
               return (ps', ())
-
 
 pstIncrBytes :: Int -> PeerStatistics -> PeerStatistics
 pstIncrBytes bytes peerStatistics = peerStatistics {
@@ -285,27 +282,27 @@ pstAddHandler provenance map rateLimiting = case provenance of
 
     Local peer _ -> case Map.lookup peer map of
         Nothing -> do
-            case rateLimiting of
-                RL.NoRateLimiting _ -> return ()
-                RL.RateLimiting {..} ->
-                    rlNewLock peer
-            peerStatistics <- newSharedAtomic (PeerStatistics 0 1 0)
+            RL.rlNewLock rateLimiting peer
+            let stats = (PeerStatistics 0 1 0)
+            peerStatistics <- newSharedAtomic stats
+            RL.rlAdjustLock rateLimiting peer stats
             return (Map.insert peer peerStatistics map, True)
-        Just !statsVar -> modifySharedAtomic statsVar $ \stats ->
+        Just !statsVar -> modifySharedAtomic statsVar $ \stats -> do
             let !stats' = stats { pstRunningHandlersLocal = pstRunningHandlersLocal stats + 1 }
-            in return (stats', (map, False))
+            RL.rlAdjustLock rateLimiting peer stats'
+            return (stats', (map, False))
 
     Remote peer _ _ -> case Map.lookup peer map of
         Nothing -> do
-            case rateLimiting of
-                RL.NoRateLimiting _ -> return ()
-                RL.RateLimiting {..} ->
-                    rlNewLock peer
-            peerStatistics <- newSharedAtomic (PeerStatistics 1 0 0)
+            RL.rlNewLock rateLimiting peer
+            let stats = (PeerStatistics 1 0 0)
+            peerStatistics <- newSharedAtomic stats
+            RL.rlAdjustLock rateLimiting peer stats
             return (Map.insert peer peerStatistics map, True)
-        Just !statsVar -> modifySharedAtomic statsVar $ \stats ->
+        Just !statsVar -> modifySharedAtomic statsVar $ \stats -> do
             let !stats' = stats { pstRunningHandlersLocal = pstRunningHandlersRemote stats + 1 }
-            in return (stats', (map, False))
+            RL.rlAdjustLock rateLimiting peer stats'
+            return (stats', (map, False))
 
 -- | Remove a handler for a given peer. Second component is True if there
 --   are no more handlers for that peer.
@@ -313,28 +310,31 @@ pstRemoveHandler
     :: (WithLogger m, Mockable SharedAtomic m)
     => HandlerProvenance peerData m t
     -> Map NT.EndPointAddress (SharedAtomicT m PeerStatistics)
+    -> RL.RateLimiting m
     -> m (Map NT.EndPointAddress (SharedAtomicT m PeerStatistics), Bool)
-pstRemoveHandler provenance map = case provenance of
+pstRemoveHandler provenance map rateLimiting = case provenance of
 
     Local peer _ -> case Map.lookup peer map of
         Nothing ->  do
             logWarning $ sformat ("tried to remove handler for "%shown%", but it is not in the map") peer
             return (map, False)
-        Just !statsVar -> modifySharedAtomic statsVar $ \stats ->
+        Just !statsVar -> modifySharedAtomic statsVar $ \stats -> do
             let stats' = stats { pstRunningHandlersLocal = pstRunningHandlersLocal stats - 1 }
-            in return $ if pstNull stats'
-                        then (stats', (Map.delete peer map, True))
-                        else (stats', (map, False))
+            RL.rlAdjustLock rateLimiting peer stats'
+            return $ if pstNull stats'
+                     then (stats', (Map.delete peer map, True))
+                     else (stats', (map, False))
 
     Remote peer _ _ -> case Map.lookup peer map of
         Nothing ->  do
             logWarning $ sformat ("tried to remove handler for "%shown%", but it is not in the map") peer
             return (map, False)
-        Just !statsVar -> modifySharedAtomic statsVar $ \stats ->
+        Just !statsVar -> modifySharedAtomic statsVar $ \stats -> do
             let stats' = stats { pstRunningHandlersRemote = pstRunningHandlersRemote stats - 1 }
-            in return $ if pstNull stats'
-                        then (stats', (Map.delete peer map, True))
-                        else (stats', (map, False))
+            RL.rlAdjustLock rateLimiting peer stats'
+            return $ if pstNull stats'
+                     then (stats', (Map.delete peer map, True))
+                     else (stats', (map, False))
 
 data HandlerProvenance peerData m t =
       -- | Initiated locally, _to_ this peer. The Nonce is present if and only
@@ -437,10 +437,10 @@ stRemoveHandler !provenance !elapsed !outcome !rateLimiting !statistics = case p
     -- both local and remote. It's a copy/paste job right now swapping local
     -- for remote.
     Local !peer _ -> do
-        (!peerStatistics, !isEndedPeer) <- pstRemoveHandler provenance (stPeerStatistics statistics)
+        (!peerStatistics, !isEndedPeer) <- pstRemoveHandler provenance (stPeerStatistics statistics) rateLimiting
         when isEndedPeer $ do
             Metrics.decGauge (stPeers statistics)
-            removeLock peer
+            RL.rlRemoveLock rateLimiting peer
         Metrics.decGauge (stRunningHandlersLocal statistics)
         !npeers <- Metrics.readGauge (stPeers statistics)
         !nhandlers <- Metrics.readGauge (stRunningHandlersLocal statistics)
@@ -456,10 +456,10 @@ stRemoveHandler !provenance !elapsed !outcome !rateLimiting !statistics = case p
             }
 
     Remote !peer _ _ -> do
-        (!peerStatistics, !isEndedPeer) <- pstRemoveHandler provenance (stPeerStatistics statistics)
+        (!peerStatistics, !isEndedPeer) <- pstRemoveHandler provenance (stPeerStatistics statistics) rateLimiting
         when isEndedPeer $ do
             Metrics.decGauge (stPeers statistics)
-            removeLock peer
+            RL.rlRemoveLock rateLimiting peer
         Metrics.decGauge (stRunningHandlersRemote statistics)
         !npeers <- Metrics.readGauge (stPeers statistics)
         !nhandlers <- Metrics.readGauge (stRunningHandlersRemote statistics)
@@ -475,10 +475,6 @@ stRemoveHandler !provenance !elapsed !outcome !rateLimiting !statistics = case p
             }
 
     where
-
-    removeLock = case rateLimiting of
-        RL.NoRateLimiting _ -> const (return ())
-        RL.RateLimiting {..} -> rlRemoveLock
 
     -- Convert the elapsed time to a Double and then add it to the relevant
     -- distribution.
