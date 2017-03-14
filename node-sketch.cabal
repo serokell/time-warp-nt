@@ -14,6 +14,7 @@ flag benchmarks
 Library
   exposed-modules:      Network.Discovery.Abstract
                         Network.Discovery.Transport.Kademlia
+                        Network.RateLimiting
                         Network.Transport.Abstract
                         Network.Transport.Concrete
                         Network.Transport.Concrete.TCP
@@ -36,6 +37,7 @@ Library
 
                         Node.Internal
                         Node.Message
+                        Node.Statistics
 
                         Node.Util.Monitor
 

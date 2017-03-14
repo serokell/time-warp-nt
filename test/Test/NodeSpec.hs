@@ -30,6 +30,7 @@ import           Test.Util                   (HeavyParcel (..), Parcel (..),
                                               makeTCPTransport, makeInMemoryTransport,
                                               Payload(..), timeout)
 import           System.Random               (newStdGen)
+import qualified Network.RateLimiting        as RL
 import qualified Network.Transport           as NT (Transport)
 import qualified Network.Transport.Abstract  as NT
                                              (closeTransport, newEndPoint,
@@ -50,18 +51,24 @@ import           Node
 spec :: Spec
 spec = describe "Node" $ do
 
+    let mkTransportAndRateLimiting n mkRl = runIO $ do
+            rateLimiting <- runProduction mkRl
+            transport <- makeTCPTransport "0.0.0.0" "127.0.0.1" n (RL.rlQDisc rateLimiting)
+            return (transport, rateLimiting)
     let tcpTransportOnePlace = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10342" simpleOnePlaceQDisc
-    let tcpTransportFair = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10343" (fairQDisc (const (return Nothing)))
-    let memoryTransport = runIO $ makeInMemoryTransport
-    let transports = [
-              ("In-memory", memoryTransport)
-            , ("TCP", tcpTransportOnePlace)
+    let tcpTransportFair = mkTransportAndRateLimiting "10343" (return RL.noRateLimitingFair) -- runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10343" (fairQDisc (const (return Nothing)))
+    let memoryTransport = runIO makeInMemoryTransport
+    let blockingTransport n = mkTransportAndRateLimiting "10344" (RL.rateLimitingBlocking runProduction n)
+    let transports =
+            [ ("In-memory", (,RL.noRateLimitingUnbounded) <$> memoryTransport)
+            , ("TCP", (,RL.noRateLimitingUnbounded) <$> tcpTransportOnePlace)
             , ("TCP fair queueing", tcpTransportFair)
+            , ("TCP blocking rate-limiting", blockingTransport (1024*1024))
             ]
 
     forM_ transports $ \(name, mkTransport) -> do
 
-        transport_ <- mkTransport
+        (transport_, rateLimiting) <- mkTransport
         let transport = concrete transport_
 
         describe ("Using transport: " ++ name) $ afterAll_ (runProduction (NT.closeTransport transport)) $ do
@@ -83,13 +90,13 @@ spec = describe "Node" $ do
                                 _ <- timeout "server sending response" 30000000 (send cactions (Parcel i (Payload 32)))
                                 return ()
 
-                let server = node transport serverGen BinaryP ("server" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
+                let server = node transport serverGen rateLimiting BinaryP ("server" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
                         NodeAction [listener] $ \sendActions -> do
                             putSharedExclusive serverAddressVar (nodeId _node)
                             takeSharedExclusive clientFinished
                             putSharedExclusive serverFinished ()
 
-                let client = node transport clientGen BinaryP ("client" :: String, 24 :: Int) defaultNodeEnvironment $ \_node ->
+                let client = node transport clientGen rateLimiting BinaryP ("client" :: String, 24 :: Int) defaultNodeEnvironment $ \_node ->
                         NodeAction [listener] $ \sendActions -> do
                             serverAddress <- readSharedExclusive serverAddressVar
                             forM_ [1..attempts] $ \i -> withConnectionTo sendActions serverAddress $ \peerData cactions -> do
@@ -129,7 +136,7 @@ spec = describe "Node" $ do
                                 _ <- send cactions (Parcel i (Payload 32))
                                 return ()
 
-                node transport gen BinaryP ("some string" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
+                node transport gen rateLimiting BinaryP ("some string" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
                     NodeAction [listener] $ \sendActions -> do
                         forM_ [1..attempts] $ \i -> withConnectionTo sendActions (nodeId _node) $ \peerData cactions -> do
                             pd <- timeout "client waiting for peer data" 30000000 peerData
@@ -164,7 +171,7 @@ spec = describe "Node" $ do
                         handleThreadKilled Timeout = do
                             --liftIO . putStrLn $ "Thread killed successfully!"
                             return ()
-                    node transport gen BinaryP () env $ \_node ->
+                    node transport gen rateLimiting BinaryP () env $ \_node ->
                         NodeAction [] $ \sendActions -> do
                             timeout "client waiting for ACK" 5000000 $
                                 flip catch handleThreadKilled $ withConnectionTo sendActions peerAddr $ \peerData cactions -> do

@@ -50,19 +50,19 @@ import           Data.Binary                 (Binary (..))
 import qualified Data.ByteString             as LBS
 import qualified Data.List                   as L
 import qualified Data.Set                    as S
-import           Data.Time.Units             (Microsecond, Millisecond, Second, TimeUnit)
+import           Data.Time.Units             (Microsecond, Second, TimeUnit)
 import           GHC.Generics                (Generic)
 import           Mockable.Class              (Mockable)
-import           Mockable.Concurrent         (delay, forConcurrently, fork, cancel,
-                                              async, withAsync, wait, Concurrently,
+import           Mockable.Concurrent         (delay, forConcurrently, fork,
+                                              withAsync, wait, Concurrently,
                                               Delay, Async)
 import           Mockable.SharedExclusive    (newSharedExclusive, putSharedExclusive,
                                               takeSharedExclusive, SharedExclusive,
-                                              readSharedExclusive, tryPutSharedExclusive)
+                                              readSharedExclusive)
 import           Mockable.Exception          (Catch, Throw, catch, throw)
 import           Mockable.Production         (Production (..))
+import           Network.RateLimiting        (noRateLimitingUnbounded)
 import qualified Network.Transport           as NT (Transport)
-import           Network.Transport.Abstract  (closeTransport, Transport)
 import           Network.Transport.Concrete  (concrete)
 import qualified Network.Transport.TCP       as TCP
 import qualified Network.Transport.InMemory  as InMemory
@@ -102,8 +102,8 @@ timeout str us m = do
     let timeoutAction = do
             delay us
             putSharedExclusive var (Left . error $ str ++ " : timeout after " ++ show us)
-    withAsync action $ \actionPromise -> do
-        withAsync timeoutAction $ \timeoutPromise -> do
+    withAsync action $ \_actionPromise -> do
+        withAsync timeoutAction $ \_timeoutPromise -> do
             choice <- readSharedExclusive var
             case choice of
                 Left e -> throw e
@@ -237,7 +237,7 @@ sendAll SingleMessageStyle sendActions peerId msgs =
 
 sendAll ConversationStyle sendActions peerId msgs =
     timeout "sendAll" 30000000 $
-        void . withConnectionTo sendActions @_ @Bool peerId $ \peerData cactions -> forM_ msgs $
+        void . withConnectionTo sendActions @_ @Bool peerId $ \_peerData cactions -> forM_ msgs $
         \msg -> do
             send cactions msg
             _ <- recv cactions
@@ -308,7 +308,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
     clientFinished <- newSharedExclusive
     serverFinished <- newSharedExclusive
 
-    let server = node transport prng1 BinaryP () defaultNodeEnvironment $ \serverNode -> do
+    let server = node transport prng1 noRateLimitingUnbounded BinaryP () defaultNodeEnvironment $ \serverNode -> do
             NodeAction listeners $ \_ -> do
                 -- Give our address to the client.
                 putSharedExclusive serverAddressVar (nodeId serverNode)
@@ -319,7 +319,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
                 -- Allow the client to stop.
                 putSharedExclusive serverFinished ()
 
-    let client = node transport prng2 BinaryP () defaultNodeEnvironment $ \clientNode ->
+    let client = node transport prng2 noRateLimitingUnbounded BinaryP () defaultNodeEnvironment $ \clientNode ->
             NodeAction [] $ \sendActions -> do
                 serverAddress <- takeSharedExclusive serverAddressVar
                 void . forConcurrently workers $ \worker ->

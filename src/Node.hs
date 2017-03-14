@@ -38,8 +38,8 @@ module Node (
     , hoistConversationActions
     , LL.NodeId(..)
 
-    , LL.Statistics(..)
-    , LL.PeerStatistics(..)
+    , Statistics(..)
+    , PeerStatistics(..)
 
     , LL.Timeout(..)
 
@@ -63,9 +63,11 @@ import           Mockable.Exception
 import qualified Mockable.Metrics           as Metrics
 import           Mockable.SharedAtomic
 import           Mockable.SharedExclusive
+import qualified Network.RateLimiting       as RL
 import qualified Network.Transport.Abstract as NT
 import           Node.Internal              (ChannelIn, ChannelOut)
 import qualified Node.Internal              as LL
+import           Node.Statistics            (PeerStatistics (..), Statistics (..))
 import           Node.Message
 import           System.Random              (StdGen)
 import           System.Wlog                (WithLogger, logDebug, logError, logInfo)
@@ -73,7 +75,7 @@ import           System.Wlog                (WithLogger, logDebug, logError, log
 data Node m = Node {
       nodeId         :: LL.NodeId
     , nodeEndPoint   :: NT.EndPoint m
-    , nodeStatistics :: m (LL.Statistics m)
+    , nodeStatistics :: m (Statistics m)
     }
 
 nodeEndPointAddress :: Node m -> NT.EndPointAddress
@@ -287,12 +289,13 @@ node
        )
     => NT.Transport m
     -> StdGen
+    -> RL.RateLimiting m
     -> packing
     -> peerData
     -> LL.NodeEnvironment m
     -> (Node m -> NodeAction packing peerData m t)
     -> m t
-node transport prng packing peerData nodeEnv k = do
+node transport prng rateLimiting packing peerData nodeEnv k = do
     rec { let nId = LL.nodeId llnode
         ; let endPoint = LL.nodeEndPoint llnode
         ; let nodeUnit = Node nId endPoint (LL.nodeStatistics llnode)
@@ -308,6 +311,7 @@ node transport prng packing peerData nodeEnv k = do
               transport
               prng
               nodeEnv
+              rateLimiting
               (handlerIn listenerIndex sendActions)
               (handlerInOut llnode listenerIndex)
         ; let sendActions = nodeSendActions llnode packing
