@@ -7,8 +7,8 @@ module Network.RateLimiting
          RateLimiting(..)
        , rlLift
          -- * Rate-limiting strategies
-       , rateLimitingUnbounded
-       , rateLimitingFair
+       , noRateLimitingUnbounded
+       , noRateLimitingFair
        , rateLimitingBlocking
        , rateLimitingDamping
        ) where
@@ -29,16 +29,28 @@ import           Network.Transport.TCP (QDisc(..), simpleUnboundedQDisc)
 -- This includes a 'QDisc' to govern how incoming requests are
 -- enqueued and dequeued, and also the possibility to block or delay
 -- requests from a peer depending on the number of in-flight bytes.
+--
+-- Each peer will get a "lock" that determines whether a new request
+-- will be immediately enqueued, delayed by a fixed time, or blocked
+-- until some requests from that peer are completed.
 data RateLimiting m =
       NoRateLimiting !(forall t. IO (QDisc t))
     | RateLimiting
-      { rlQDisc :: forall t. IO (QDisc t)
+      { -- | `QDisc` used for rate limiting.
+        rlQDisc :: forall t. IO (QDisc t)
+        -- | Change the state of the lock for a given peer, depending
+        -- on the number of in-flight bytes for this peer.  To be
+        -- called when the number of in-flight bytes changes.
       , rlLockByBytes
             :: (Mockable SharedAtomic m)
             => EndPointAddress
-            -> Int
+            -> Int -- ^ Number of in-flight bytes.
             -> m ()
+        -- | Register a lock for a new peer.  This will be called by a
+        -- node when a new peer connects
       , rlNewLock :: EndPointAddress -> m ()
+        -- | Unregister the lock for a peer.  To be called when the
+        -- last handler of a peer is finished.
       , rlRemoveLock :: EndPointAddress -> m ()
       }
 
@@ -53,13 +65,13 @@ rlLift RateLimiting{..} = RateLimiting
 
 -- | The simplest rate-limiting procedure uses an unbounded queue, and
 -- performs no rate limiting at all.
-rateLimitingUnbounded :: Monad m => RateLimiting m
-rateLimitingUnbounded = NoRateLimiting simpleUnboundedQDisc
+noRateLimitingUnbounded :: Monad m => RateLimiting m
+noRateLimitingUnbounded = NoRateLimiting simpleUnboundedQDisc
 
 -- | Ensures fariness in queueing requests from different peers, but
 -- does no rate-limiting.
-rateLimitingFair :: Monad m => RateLimiting m
-rateLimitingFair = NoRateLimiting (fairQDisc (const $ return Nothing))
+noRateLimitingFair :: Monad m => RateLimiting m
+noRateLimitingFair = NoRateLimiting (fairQDisc (const $ return Nothing))
 
 -- | A 'RateLimiting' that actually does rate-limiting.
 --
@@ -73,8 +85,8 @@ rateLimitingBlocking
     => (forall t. m t -> IO t)
     -> Int -- ^ Maximum in-flight bytes per peer.
     -> m (RateLimiting m)
-rateLimitingBlocking liftIO maxBytesPerPeer =
-    rateLimitingDamping liftIO (const Nothing) (Just maxBytesPerPeer)
+rateLimitingBlocking lowerIO maxBytesPerPeer =
+    rateLimitingDamping lowerIO (const Nothing) (Just maxBytesPerPeer)
 
 -- | rate-limiting strategy that can delay or block traffic, depending
 -- on the number of in-flight bytes.
@@ -88,10 +100,10 @@ rateLimitingDamping
     -- ^ If given, further messages will be blocked
     -- if the number of in-flight bytes passes this threshold.
     -> m (RateLimiting m)
-rateLimitingDamping liftIO dampingFunction mThreshold = do
+rateLimitingDamping lowerIO dampingFunction mThreshold = do
     locks <- newSharedAtomic Map.empty
     return RateLimiting
-        { rlQDisc = fairQDisc $ \peer -> liftIO $ do
+        { rlQDisc = fairQDisc $ \peer -> lowerIO $ do
             lockMap <- readSharedAtomic locks
             case Map.lookup peer lockMap of
                 Nothing -> return Nothing

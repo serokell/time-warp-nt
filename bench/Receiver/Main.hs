@@ -19,7 +19,7 @@ import           Mockable                   (Production (runProduction))
 
 import           Bench.Network.Commons      (MeasureEvent (..), Ping (..), Pong (..),
                                              loadLogConfig, logMeasure)
-import           Network.RateLimiting       (rateLimitingUnbounded)
+import           Network.RateLimiting       (noRateLimitingUnbounded)
 import qualified Network.Transport.TCP      as TCP
 import           Network.Transport.Concrete (concrete)
 import           Node                       (ListenerAction (..), NodeAction (..), node,
@@ -47,7 +47,7 @@ main = do
     let prng = mkStdGen 0
 
     runProduction $ usingLoggerName "receiver" $ do
-        node transport prng rateLimitingUnbounded BinaryP () defaultNodeEnvironment $ \_ ->
+        node transport prng noRateLimitingUnbounded BinaryP () defaultNodeEnvironment $ \_ ->
             NodeAction [pingListener noPong] $ \_ -> do
                 threadDelay (fromIntegral duration :: Second)
   where

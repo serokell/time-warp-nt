@@ -58,12 +58,12 @@ spec = describe "Node" $ do
                 RL.RateLimiting {..} -> makeTCPTransport "0.0.0.0" "127.0.0.1" n rlQDisc
             return (transport, rateLimiting)
     let tcpTransportOnePlace = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10342" simpleOnePlaceQDisc
-    let tcpTransportFair = mkTransportAndRateLimiting "10343" (return RL.rateLimitingFair) -- runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10343" (fairQDisc (const (return Nothing)))
+    let tcpTransportFair = mkTransportAndRateLimiting "10343" (return RL.noRateLimitingFair) -- runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10343" (fairQDisc (const (return Nothing)))
     let memoryTransport = runIO makeInMemoryTransport
     let blockingTransport n = mkTransportAndRateLimiting "10344" (RL.rateLimitingBlocking runProduction n)
     let transports =
-            [ ("In-memory", (,RL.rateLimitingUnbounded) <$> memoryTransport)
-            , ("TCP", (,RL.rateLimitingUnbounded) <$> tcpTransportOnePlace)
+            [ ("In-memory", (,RL.noRateLimitingUnbounded) <$> memoryTransport)
+            , ("TCP", (,RL.noRateLimitingUnbounded) <$> tcpTransportOnePlace)
             , ("TCP fair queueing", tcpTransportFair)
             , ("TCP blocking rate-limiting", blockingTransport (1024*1024))
             ]

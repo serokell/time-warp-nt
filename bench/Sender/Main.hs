@@ -23,7 +23,7 @@ import           System.Random              (mkStdGen)
 import           System.Wlog                (usingLoggerName, LoggerNameBox)
 
 import           Mockable                   (fork, realTime, delay, Production, runProduction)
-import           Network.RateLimiting       (rateLimitingUnbounded)
+import           Network.RateLimiting       (noRateLimitingUnbounded)
 import qualified Network.Transport.Abstract as NT
 import           Network.Transport.Concrete (concrete)
 import           Node                       (ListenerAction (..), NodeAction (..), node,
@@ -77,7 +77,7 @@ main = do
             let pingWorkers = liftA2 (pingSender prngWork payloadBound startTime msgRate)
                                      tasksIds
                                      (zip [0, msgNum..] nodeIds)
-            node transport prngNode rateLimitingUnbounded BinaryP () defaultNodeEnvironment $ \node' ->
+            node transport prngNode noRateLimitingUnbounded BinaryP () defaultNodeEnvironment $ \node' ->
                 NodeAction [pongListener] $ \sactions -> do
                     drones <- forM nodeIds (startDrone node')
                     _ <- forM pingWorkers (fork . flip ($) sactions)
