@@ -37,6 +37,7 @@ Library
 
                         Node.Internal
                         Node.Message
+                        Node.Statistics
 
                         Node.Util.Monitor
 

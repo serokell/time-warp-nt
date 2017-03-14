@@ -38,8 +38,8 @@ module Node (
     , hoistConversationActions
     , LL.NodeId(..)
 
-    , LL.Statistics(..)
-    , LL.PeerStatistics(..)
+    , Statistics(..)
+    , PeerStatistics(..)
 
     , LL.Timeout(..)
 
@@ -67,6 +67,7 @@ import qualified Network.RateLimiting       as RL
 import qualified Network.Transport.Abstract as NT
 import           Node.Internal              (ChannelIn, ChannelOut)
 import qualified Node.Internal              as LL
+import           Node.Statistics            (PeerStatistics (..), Statistics (..))
 import           Node.Message
 import           System.Random              (StdGen)
 import           System.Wlog                (WithLogger, logDebug, logError, logInfo)
@@ -74,7 +75,7 @@ import           System.Wlog                (WithLogger, logDebug, logError, log
 data Node m = Node {
       nodeId         :: LL.NodeId
     , nodeEndPoint   :: NT.EndPoint m
-    , nodeStatistics :: m (LL.Statistics m)
+    , nodeStatistics :: m (Statistics m)
     }
 
 nodeEndPointAddress :: Node m -> NT.EndPointAddress
