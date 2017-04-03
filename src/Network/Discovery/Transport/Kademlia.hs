@@ -64,7 +64,7 @@ kademliaDiscovery
     --   If there are no other peers in the network, use this node's id.
     -> EndPointAddress
     -- ^ Local endpoint address. Will store it in the DHT.
-    -> m (NetworkDiscovery KademliaDiscoveryErrorCode m)
+    -> m (NetworkDiscovery KademliaDiscoveryErrorCode m, m ())
 kademliaDiscovery configuration initialPeer myAddress = do
     let kid :: KSerialize i
         kid = KSerialize (kademliaId configuration)
@@ -82,7 +82,7 @@ kademliaDiscovery configuration initialPeer myAddress = do
     -- Join the network and store the local 'EndPointAddress'.
     _ <- liftIO $ kademliaJoinAndUpdate kademliaInst peersTVar initialPeer
     liftIO $ K.store kademliaInst kid (KSerialize myAddress)
-    pure $ NetworkDiscovery knownPeers discoverPeers close
+    pure (NetworkDiscovery knownPeers discoverPeers, close)
 
 -- | Join a Kademlia network (using a given known node address) and update the
 --   known peers cache.

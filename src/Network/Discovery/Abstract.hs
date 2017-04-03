@@ -20,7 +20,6 @@ data NetworkDiscovery err m = NetworkDiscovery {
     -- ^ The set is the newly discovered peers (disjoint from 'knownPeers' at
     -- the time it's used). Subsequent uses of 'knownPeers' should include these
     -- new endpoints.
-    , closeDiscovery :: m ()
     }
 
 data DiscoveryError error = DiscoveryError error String

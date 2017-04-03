@@ -96,8 +96,8 @@ makeNode transport i = do
     fork $ node (simpleNodeEndPoint transport) prng1 BinaryP (B8.pack "my peer data!") defaultNodeEnvironment $ \node' ->
         NodeAction (listeners . nodeId $ node') $ \sactions -> do
             liftIO . putStrLn $ "Making discovery for node " ++ show i
-            discovery <- K.kademliaDiscovery kademliaConfig initialPeer (nodeEndPointAddress node')
-            worker (nodeId node') prng2 discovery sactions `finally` closeDiscovery discovery
+            (discovery, closeDiscovery) <- K.kademliaDiscovery kademliaConfig initialPeer (nodeEndPointAddress node')
+            worker (nodeId node') prng2 discovery sactions `finally` closeDiscovery
     where
     makeId anId
         | anId < 10 = B8.pack ("node_identifier_0" ++ show anId)
