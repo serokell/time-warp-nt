@@ -814,7 +814,15 @@ nodeDispatcher node handlerIn handlerInOut =
             return (st, ())
 
         _ <- waitForRunningHandlers node
-        return ()
+
+        -- Check that this node was closed by a call to 'stopNode'. If it
+        -- wasn't, we throw an exception. This is important because the thread
+        -- which runs 'startNode' must *not* continue after the 'EndPoint' is
+        -- closed.
+        withSharedAtomic nstate $ \nodeState ->
+            if _nodeStateClosed nodeState
+            then pure ()
+            else throw (InternalError "EndPoint prematurely closed")
 
     connectionOpened
         :: DispatcherState peerData m
