@@ -603,6 +603,8 @@ startNode packingType peerData mkNodeEndPoint prng nodeEnv handlerIn handlerOut 
                                 }
                       ; dispatcherThread <- async $
                             nodeDispatcher node handlerIn handlerOut
+                      -- Exceptions in the dispatcher are re-thrown here.
+                      ; link dispatcherThread
                       }
                   return node
         }
