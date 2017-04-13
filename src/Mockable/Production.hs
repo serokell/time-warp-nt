@@ -1,41 +1,41 @@
 {-# OPTIONS_GHC -O2 #-}
+{-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE StandaloneDeriving         #-}
 {-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE FlexibleContexts           #-}
 
 module Mockable.Production
        ( Production (..)
        ) where
 
-import qualified Control.Concurrent       as Conc
-import qualified Control.Concurrent.Async as Conc
-import qualified Control.Concurrent.STM   as Conc
-import qualified Control.Exception        as Exception
-import           Control.Monad            (forever)
-import           Control.Monad.Catch      (MonadCatch (..), MonadMask (..),
-                                           MonadThrow (..))
-import           Control.Monad.Fix        (MonadFix)
-import           Control.Monad.IO.Class   (MonadIO)
-import           Data.Time.Units          (Hour)
-import           System.Wlog              (CanLog (..), HasLoggerName (..))
+import qualified Control.Concurrent          as Conc
+import qualified Control.Concurrent.Async    as Conc
+import qualified Control.Concurrent.STM      as Conc
+import qualified Control.Exception           as Exception
+import           Control.Monad               (forever)
+import           Control.Monad.Catch         (MonadCatch (..), MonadMask (..),
+                                              MonadThrow (..))
+import           Control.Monad.Fix           (MonadFix)
+import           Control.Monad.IO.Class      (MonadIO)
+import           Data.Time.Units             (Hour)
+import           System.Wlog                 (CanLog (..), HasLoggerName (..))
 
-import           Mockable.Channel         (Channel (..), ChannelT)
-import           Mockable.Class           (Mockable (..))
-import           Mockable.Concurrent      (Async (..), Concurrently (..), Delay (..),
-                                           Fork (..), Promise, RunInUnboundThread (..),
-                                           ThreadId)
-import           Mockable.CurrentTime     (CurrentTime (..), realTime)
-import           Mockable.Exception       (Bracket (..), Catch (..), Throw (..))
-import           Mockable.SharedAtomic    (SharedAtomic (..), SharedAtomicT)
-import           Mockable.SharedExclusive (SharedExclusive (..), SharedExclusiveT)
-import qualified Mockable.Metrics         as Metrics
+import           Mockable.Channel            (Channel (..), ChannelT)
+import           Mockable.Class              (Mockable (..))
+import           Mockable.Concurrent         (Async (..), Concurrently (..), Delay (..),
+                                              Fork (..), Promise, RunInUnboundThread (..),
+                                              ThreadId)
+import           Mockable.CurrentTime        (CurrentTime (..), realTime)
+import           Mockable.Exception          (Bracket (..), Catch (..), Throw (..))
+import qualified Mockable.Metrics            as Metrics
+import           Mockable.SharedAtomic       (SharedAtomic (..), SharedAtomicT)
+import           Mockable.SharedExclusive    (SharedExclusive (..), SharedExclusiveT)
+import           Serokell.Util.Concurrent    as Serokell
+import qualified System.Metrics.Counter      as EKG.Counter
 import qualified System.Metrics.Distribution as EKG.Distribution
-import qualified System.Metrics.Gauge     as EKG.Gauge
-import qualified System.Metrics.Counter   as EKG.Counter
-import           Serokell.Util.Concurrent as Serokell
-import           Universum                (MonadFail (..))
+import qualified System.Metrics.Gauge        as EKG.Gauge
+import           Universum                   (MonadFail (..))
 
 newtype Production t = Production
     { runProduction :: IO t
@@ -84,6 +84,8 @@ instance Mockable Async Production where
     liftMockable (WaitAny promises)     = Production $ Conc.waitAny promises
     liftMockable (CancelWith promise e) = Production $ Conc.cancelWith promise e
     liftMockable (AsyncThreadId p)      = Production $ return (Conc.asyncThreadId p)
+    liftMockable (Race a b)             = Production $ Conc.race (runProduction a) (runProduction b)
+    liftMockable (Link p)               = Production $ Conc.link p
 
 instance Mockable Concurrently Production where
     {-# INLINABLE liftMockable #-}
