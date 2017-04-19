@@ -80,8 +80,9 @@ listeners anId = [pongListener]
 main :: IO ()
 main = runProduction $ do
 
+    let addrInfo = TCP.Addressable $ TCP.TCPAddrInfo "0.0.0.0" "10128" ((,) "127.0.0.1")
     Right transport_ <- liftIO $
-        TCP.createTransport "0.0.0.0" "10128" ((,) "127.0.0.1") TCP.defaultTCPParameters
+        TCP.createTransport addrInfo TCP.defaultTCPParameters
     let transport = concrete transport_
 
     let prng1 = mkStdGen 0
