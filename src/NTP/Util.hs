@@ -7,19 +7,24 @@ module NTP.Util
     , preferIPv6
     , selectIPv6
     , selectIPv4
+    , withSocketsDoLifted
     ) where
 
-import           Control.Monad.Catch   (catchAll)
-import           Control.Monad.Trans   (MonadIO (..))
-import           Data.List             (sortOn)
-import           Data.List             (find)
-import           Data.Time.Clock.POSIX (getPOSIXTime)
-import           Data.Time.Units       (Microsecond, fromMicroseconds)
-import           Network.Socket        (AddrInfo, AddrInfoFlag (AI_ADDRCONFIG),
-                                        Family (AF_INET, AF_INET6), PortNumber (..),
-                                        SockAddr (..), SocketType (Datagram), addrAddress,
-                                        addrFamily, addrFlags, addrSocketType,
-                                        defaultHints, getAddrInfo)
+import           Control.Concurrent          (forkIO)
+import           Control.Concurrent.STM      (atomically, check)
+import           Control.Concurrent.STM.TVar (newTVarIO, readTVar, writeTVar)
+import           Control.Monad               (void)
+import           Control.Monad.Catch         (MonadMask, bracket, catchAll)
+import           Control.Monad.Trans         (MonadIO (..))
+import           Data.List                   (find, sortOn)
+import           Data.Time.Clock.POSIX       (getPOSIXTime)
+import           Data.Time.Units             (Microsecond, fromMicroseconds)
+import           Network.Socket              (AddrInfo, AddrInfoFlag (AI_ADDRCONFIG),
+                                              Family (AF_INET, AF_INET6), PortNumber (..),
+                                              SockAddr (..), SocketType (Datagram),
+                                              addrAddress, addrFamily, addrFlags,
+                                              addrSocketType, defaultHints, getAddrInfo,
+                                              withSocketsDo)
 
 ntpPort :: PortNumber
 ntpPort = 123
@@ -64,3 +69,15 @@ selectIPv6 = find (\a -> addrFamily a == AF_INET6)
 
 selectIPv4 :: [AddrInfo] -> Maybe AddrInfo
 selectIPv4 = find (\a -> addrFamily a == AF_INET)
+
+-- | This function actually creates new thread with `withSocketsDo` applied;
+-- this thread is alive as long as given action performs.
+-- Naive approach would require `MonadBaseControl IO` which is seldom provided.
+withSocketsDoLifted :: (MonadIO m, MonadMask m) => m a -> m a
+withSocketsDoLifted action = do
+    bracket (liftIO $ newTVarIO False)
+            (liftIO . atomically . flip writeTVar True) $
+            \exited -> do
+                liftIO . void . forkIO $
+                    withSocketsDo . atomically $ readTVar exited >>= check
+                action
