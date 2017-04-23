@@ -19,10 +19,9 @@ import           Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, readTVa
                                               writeTVar)
 import           Control.Lens                ((%=), (.=), _Just)
 import           Control.Monad               (forM_, forever, unless, void, when)
-import           Control.Monad.Catch         (Exception)
+import           Control.Monad.Catch         (Exception, MonadMask)
 import           Control.Monad.State         (gets)
 import           Control.Monad.Trans         (MonadIO (..))
-import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Data.Binary                 (decodeOrFail, encode)
 import qualified Data.ByteString.Lazy        as LBS
 import           Data.Default                (Default (..))
@@ -117,7 +116,7 @@ instance Exception FailedToResolveHost
 
 type NtpMonad m =
     ( MonadIO m
-    , MonadBaseControl IO m
+    , MonadMask m
     , WithLogger m
     , Mockable Fork m
     , Mockable Throw m
@@ -280,18 +279,19 @@ stopNtpClient cli = do
     whenJust sock2 $ \s -> liftIO (close s) `catchAll` (\_ -> pure ())
 
 startNtpClient :: NtpMonad m => NtpClientSettings m -> m (NtpStopButton m)
-startNtpClient settings = do
-    sock <- mkSockets settings
-    cli <- mkNtpClient settings sock
+startNtpClient settings =
+    withSocketsDoLifted $ do
+        sock <- mkSockets settings
+        cli <- mkNtpClient settings sock
 
-    void . fork . withSocketsDoLifted $ startReceive cli
+        void . fork . withSocketsDoLifted $ startReceive cli
 
-    addrs <- mapM (resolveHost cli sock) (ntpServers settings)
-    void . fork . withSocketsDoLifted $ startSend addrs cli
+        addrs <- mapM (resolveHost cli sock) (ntpServers settings)
+        void . fork . withSocketsDoLifted $ startSend addrs cli
 
-    log cli Info "Launched"
+        log cli Info "Launched"
 
-    return $ NtpStopButton $ stopNtpClient cli
+        return $ NtpStopButton $ stopNtpClient cli
   where
     resolveHost cli (s1, s2) host = do
         maddr <- liftIO $ resolveNtpHost host (isJust s1, isJust s2)

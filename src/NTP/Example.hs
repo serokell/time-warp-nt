@@ -26,6 +26,6 @@ type WorkMode = LoggerNameBox Production
 
 runNtpClientIO :: NtpClientSettings WorkMode -> IO ()
 runNtpClientIO settings = do
-    initTerminalLogging True (Just Debug)
+    initTerminalLogging True (Just Info)
     void $ runProduction $ usingLoggerName "ntp-example" $
         startNtpClient settings

@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TypeApplications #-}
 
 module NTP.Util
     ( ntpPort
@@ -10,9 +10,12 @@ module NTP.Util
     , withSocketsDoLifted
     ) where
 
-import           Control.Monad.Catch         (catchAll)
+import           Control.Concurrent          (forkIO)
+import           Control.Concurrent.STM      (atomically, check)
+import           Control.Concurrent.STM.TVar (newTVarIO, readTVar, writeTVar)
+import           Control.Monad               (void)
+import           Control.Monad.Catch         (MonadMask, bracket, catchAll)
 import           Control.Monad.Trans         (MonadIO (..))
-import           Control.Monad.Trans.Control (MonadBaseControl (..))
 import           Data.List                   (find, sortOn)
 import           Data.Time.Clock.POSIX       (getPOSIXTime)
 import           Data.Time.Units             (Microsecond, fromMicroseconds)
@@ -20,7 +23,8 @@ import           Network.Socket              (AddrInfo, AddrInfoFlag (AI_ADDRCON
                                               Family (AF_INET, AF_INET6), PortNumber (..),
                                               SockAddr (..), SocketType (Datagram),
                                               addrAddress, addrFamily, addrFlags,
-                                              addrSocketType, defaultHints, getAddrInfo)
+                                              addrSocketType, defaultHints, getAddrInfo,
+                                              withSocketsDo)
 
 ntpPort :: PortNumber
 ntpPort = 123
@@ -66,7 +70,14 @@ selectIPv6 = find (\a -> addrFamily a == AF_INET6)
 selectIPv4 :: [AddrInfo] -> Maybe AddrInfo
 selectIPv4 = find (\a -> addrFamily a == AF_INET)
 
--- | Lifted version of `withSocketsDo`.
-withSocketsDoLifted :: MonadBaseControl IO m => m () -> m ()
-withSocketsDoLifted action =
-    restoreM =<< (liftBaseWith $ \runInIO -> runInIO action)
+-- | This function actually creates new thread with `withSocketsDo` applied;
+-- this thread is alive as long as given action performs.
+-- Naive approach would require `MonadBaseControl IO` which is seldom provided.
+withSocketsDoLifted :: (MonadIO m, MonadMask m) => m a -> m a
+withSocketsDoLifted action = do
+    bracket (liftIO $ newTVarIO False)
+            (liftIO . atomically . flip writeTVar True) $
+            \exited -> do
+                liftIO . void . forkIO $
+                    withSocketsDo . atomically $ readTVar exited >>= check
+                action
