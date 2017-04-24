@@ -4,7 +4,7 @@ packages:
   - '.'
   - location:
       git: https://github.com/serokell/kademlia.git
-      commit: 278171b8ab104c78aa95bcdd9b63c8ced4fb1ed2
+      commit: 21df94f41008f82ee023e8e0324c7e4a82c4fef2
     extra-dep: true
   - location:
       git: https://github.com/avieth/network-transport
@@ -12,7 +12,7 @@ packages:
     extra-dep: true
   - location:
       git: https://github.com/avieth/network-transport-tcp
-      commit: 1739cc6d5c73257201e5551088f4ba56d5ede15c
+      commit: 2cba73cb078c323264ace609e57ee1746e8e2f0c
     extra-dep: true
   - location:
       git: https://github.com/avieth/network-transport-inmemory

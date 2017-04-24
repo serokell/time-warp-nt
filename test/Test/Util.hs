@@ -3,13 +3,13 @@
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE RecursiveDo           #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE StandaloneDeriving    #-}
 {-# LANGUAGE TemplateHaskell       #-}
 {-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeFamilies          #-}
-{-# LANGUAGE RankNTypes            #-}
 
 module Test.Util
        ( makeTCPTransport
@@ -53,19 +53,19 @@ import qualified Data.Set                    as S
 import           Data.Time.Units             (Microsecond, Millisecond, Second, TimeUnit)
 import           GHC.Generics                (Generic)
 import           Mockable.Class              (Mockable)
-import           Mockable.Concurrent         (delay, forConcurrently, fork, cancel,
-                                              async, withAsync, wait, Concurrently,
-                                              Delay, Async)
-import           Mockable.SharedExclusive    (newSharedExclusive, putSharedExclusive,
-                                              takeSharedExclusive, SharedExclusive,
-                                              readSharedExclusive, tryPutSharedExclusive)
+import           Mockable.Concurrent         (Async, Concurrently, Delay, async, cancel,
+                                              delay, forConcurrently, fork, wait,
+                                              withAsync)
 import           Mockable.Exception          (Catch, Throw, catch, throw)
 import           Mockable.Production         (Production (..))
+import           Mockable.SharedExclusive    (SharedExclusive, newSharedExclusive,
+                                              putSharedExclusive, readSharedExclusive,
+                                              takeSharedExclusive, tryPutSharedExclusive)
 import qualified Network.Transport           as NT (Transport)
-import           Network.Transport.Abstract  (closeTransport, Transport)
+import           Network.Transport.Abstract  (Transport, closeTransport)
 import           Network.Transport.Concrete  (concrete)
-import qualified Network.Transport.TCP       as TCP
 import qualified Network.Transport.InMemory  as InMemory
+import qualified Network.Transport.TCP       as TCP
 import           Serokell.Util.Concurrent    (modifyTVarS)
 import           System.Random               (mkStdGen)
 import           Test.QuickCheck             (Property)
@@ -77,8 +77,8 @@ import           Test.QuickCheck.Property    (Testable (..), failed, reason, suc
 import           Node                        (ConversationActions (..), Listener,
                                               ListenerAction (..), Message (..),
                                               NodeAction (..), NodeId, SendActions (..),
-                                              Worker, node, nodeId, defaultNodeEnvironment,
-                                              simpleNodeEndPoint)
+                                              Worker, defaultNodeEnvironment, node,
+                                              nodeId, simpleNodeEndPoint)
 import           Node.Message                (BinaryP (..))
 
 -- | Run a computation, but kill it if it takes more than a given number of
@@ -107,7 +107,7 @@ timeout str us m = do
         withAsync timeoutAction $ \timeoutPromise -> do
             choice <- readSharedExclusive var
             case choice of
-                Left e -> throw e
+                Left e  -> throw e
                 Right t -> return t
 
 -- * Parcel
@@ -286,9 +286,10 @@ makeTCPTransport bind hostAddr port qdisc = do
             , TCP.tcpReuseClientAddr = True
             , TCP.tcpNewQDisc = qdisc
             }
-    choice <- TCP.createTransport bind port ((,) hostAddr) tcpParams
+    let addrInfo = TCP.Addressable $ TCP.TCPAddrInfo bind port ((,) hostAddr)
+    choice <- TCP.createTransport addrInfo tcpParams
     case choice of
-        Left err -> error (show err)
+        Left err        -> error (show err)
         Right transport -> return transport
 
 -- * Test template
