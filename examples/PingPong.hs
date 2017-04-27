@@ -58,14 +58,15 @@ worker anId generator peerIds = pingWorker generator
             let (i, gen') = randomR (0,1000000) g
                 us = fromMicroseconds i :: Microsecond
             delay us
-            let pong :: NodeId -> Production BS.ByteString -> ConversationActions Ping Pong Production -> Production ()
-                pong peerId _peerData cactions = do
+            let pong :: NodeId -> ConversationActions Ping Pong Production -> Production ()
+                pong peerId cactions = do
                     liftIO . putStrLn $ show anId ++ " sent PING to " ++ show peerId
                     received <- recv cactions
                     case received of
                         Just Pong -> liftIO . putStrLn $ show anId ++ " heard PONG from " ++ show peerId
                         Nothing -> error "Unexpected end of input"
-            forM_ peerIds $ \peerId -> withConnectionTo sendActions peerId (pong peerId)
+            forM_ peerIds $ \peerId -> withConnectionTo sendActions peerId $
+                \peerData -> Conversation (pong peerId)
             loop gen'
 
 listeners :: NodeId -> [Listener Packing BS.ByteString Production]

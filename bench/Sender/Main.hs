@@ -27,7 +27,8 @@ import           Mockable                       (fork, realTime, delay, Producti
 import qualified Network.Transport.Abstract     as NT
 import           Network.Transport.Concrete     (concrete)
 import           Node                           (ListenerAction (..), NodeAction (..), node,
-                                                 nodeEndPoint, sendTo, Node(..),
+                                                 nodeEndPoint, Node(..), SendActions (..),
+                                                 Conversation (..), ConversationActions (..),
                                                  defaultNodeEnvironment, simpleNodeEndPoint)
 import           Node.Internal                  (NodeId (..))
 import           Node.Message                   (BinaryP (..))
@@ -78,7 +79,7 @@ main = do
                                      tasksIds
                                      (zip [0, msgNum..] nodeIds)
             node (simpleNodeEndPoint transport) prngNode BinaryP () defaultNodeEnvironment $ \node' ->
-                NodeAction [pongListener] $ \sactions -> do
+                NodeAction [] $ \sactions -> do
                     drones <- forM nodeIds (startDrone node')
                     _ <- forM pingWorkers (fork . flip ($) sactions)
                     delay (fromIntegral duration :: Second)
@@ -87,10 +88,6 @@ main = do
     runProduction $ usingLoggerName "sender" $ action
   where
 
-    pongListener :: ListenerAction BinaryP () (LoggerNameBox Production)
-    pongListener = ListenerActionOneMsg $ \_ _ _ (Pong mid payload) ->
-        logMeasure PongReceived mid payload
-
     pingSender gen payloadBound startTimeMcs msgRate msgIds (msgStartId, peerId) sendActions =
         (`evalRandT` gen) . (`evalStateT` PingState startTimeMcs 0) . forM_ msgIds $ \msgId -> do
             let sMsgId = msgStartId + msgId
@@ -98,7 +95,11 @@ main = do
             lift . lift $ logMeasure PingSent sMsgId payload
             -- TODO: better to use `connect` + `send`,
             -- but `connect` is not implemented yet
-            lift . lift $ sendTo sendActions peerId $ Ping sMsgId payload
+            lift . lift $ withConnectionTo sendActions peerId $
+                \_ -> Conversation $ \cactions -> do
+                    send cactions (Ping sMsgId payload)
+                    Just (Pong sMsgId' payload') <- recv cactions
+                    return ()
 
             PingState{..}    <- get
             curTime          <- realTime
