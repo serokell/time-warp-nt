@@ -582,12 +582,10 @@ startNode
     -> StdGen
     -- ^ A source of randomness, for generating nonces.
     -> NodeEnvironment m
-    -> (peerData -> NodeId -> ChannelIn m -> m ())
-    -- ^ Handle incoming unidirectional connections.
     -> (peerData -> NodeId -> ChannelIn m -> ChannelOut m -> m ())
     -- ^ Handle incoming bidirectional connections.
     -> m (Node packingType peerData m)
-startNode packingType peerData mkNodeEndPoint prng nodeEnv handlerIn handlerOut = do
+startNode packingType peerData mkNodeEndPoint prng nodeEnv handlerOut = do
     rec { let nodeEndPoint = mkNodeEndPoint node
         ; mEndPoint <- newNodeEndPoint nodeEndPoint
         ; node <- case mEndPoint of
@@ -605,7 +603,7 @@ startNode packingType peerData mkNodeEndPoint prng nodeEnv handlerIn handlerOut 
                                 , nodePeerData         = peerData
                                 }
                       ; dispatcherThread <- async $
-                            nodeDispatcher node handlerIn handlerOut
+                            nodeDispatcher node handlerOut
                       -- Exceptions in the dispatcher are re-thrown here.
                       ; link dispatcherThread
                       }
@@ -740,10 +738,9 @@ nodeDispatcher
        , Message.Serializable packingType peerData
        , MonadFix m, WithLogger m, Show (ThreadId m) )
     => Node packingType peerData m
-    -> (peerData -> NodeId -> ChannelIn m -> m ())
     -> (peerData -> NodeId -> ChannelIn m -> ChannelOut m -> m ())
     -> m ()
-nodeDispatcher node handlerIn handlerInOut =
+nodeDispatcher node handlerInOut =
     loop initialDispatcherState
 
     where
@@ -981,19 +978,6 @@ nodeDispatcher node handlerIn handlerInOut =
                 Nothing -> return state
 
                 Just (w, ws)
-
-                    -- Got unidirectional header. Create a channel and
-                    -- spawn the application handler.
-                    | w == controlHeaderCodeUnidirectional -> do
-                          channel <- Channel.newChannel
-                          let provenance = Remote peer connid (ChannelIn channel)
-                          let handler = handlerIn peerData (NodeId peer) (ChannelIn channel)
-                          (_, incrBytes) <- spawnHandler nstate provenance handler
-                          Channel.writeChannel channel (Just ws)
-                          incrBytes $ BS.length ws
-                          return $ state {
-                                dsConnections = Map.insert connid (peer, FeedingApplicationHandler (ChannelIn channel) incrBytes) (dsConnections state)
-                              }
 
                     -- Got a bidirectional header but still waiting for the
                     -- nonce.
@@ -1352,7 +1336,7 @@ withInOutChannel
        , Message.Packable packingType peerData )
     => Node packingType peerData m
     -> NodeId
-    -> (SharedExclusiveT m peerData -> ChannelIn m -> ChannelOut m -> m a)
+    -> (peerData -> ChannelIn m -> ChannelOut m -> m a)
     -> m a
 withInOutChannel node@Node{nodeEnvironment, nodeState} nodeid@(NodeId peer) action = do
     nonce <- modifySharedAtomic nodeState $ \nodeState -> do
@@ -1381,7 +1365,9 @@ withInOutChannel node@Node{nodeEnvironment, nodeState} nodeid@(NodeId peer) acti
                       outcome <- NT.send conn [controlHeaderBidirectionalSyn nonce]
                       case outcome of
                           Left err -> throw err
-                          Right _ -> action peerDataVar channel (ChannelOut conn)
+                          Right _ -> do
+                              peerData <- readSharedExclusive peerDataVar
+                              action peerData channel (ChannelOut conn)
                   -- Here we spawn the timeout thread... Killing the 'promise'
                   -- is enough to clean everything up.
                   -- This timeout promise is included in the provenance, so

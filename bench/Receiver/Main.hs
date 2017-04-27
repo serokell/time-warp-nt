@@ -22,7 +22,7 @@ import           Bench.Network.Commons      (MeasureEvent (..), Ping (..), Pong 
 import qualified Network.Transport.TCP      as TCP
 import           Network.Transport.Concrete (concrete)
 import           Node                       (ListenerAction (..), NodeAction (..), node,
-                                             sendTo, defaultNodeEnvironment,
+                                             defaultNodeEnvironment, ConversationActions (..),
                                              simpleNodeEndPoint)
 import           Node.Message               (BinaryP (..))
 import           ReceiverOptions            (Args (..), argsParser)
@@ -52,10 +52,9 @@ main = do
                 threadDelay (fromIntegral duration :: Second)
   where
     pingListener noPong =
-        -- TODO: `ListenerActionConversation` is not supported in such context
-        -- why? how should it be used?
-        ListenerActionOneMsg $ \_ peerId sendActions (Ping mid payload) -> do
+        ListenerActionConversation $ \_ peerId cactions -> do
+            Just (Ping mid payload) <- recv cactions
             logMeasure PingReceived mid payload
             unless noPong $ do
                 logMeasure PongSent mid payload
-                sendTo sendActions peerId $ Pong mid payload
+                send cactions (Pong mid payload)
