@@ -302,7 +302,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
     serverFinished <- newSharedExclusive
 
     let server = node (simpleNodeEndPoint transport) prng1 BinaryP () defaultNodeEnvironment $ \serverNode -> do
-            NodeAction listeners $ \_ -> do
+            NodeAction (const listeners) $ \_ -> do
                 -- Give our address to the client.
                 putSharedExclusive serverAddressVar (nodeId serverNode)
                 -- Don't stop until the client has finished.
@@ -313,7 +313,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
                 putSharedExclusive serverFinished ()
 
     let client = node (simpleNodeEndPoint transport) prng2 BinaryP () defaultNodeEnvironment $ \clientNode ->
-            NodeAction [] $ \sendActions -> do
+            NodeAction (const []) $ \sendActions -> do
                 serverAddress <- takeSharedExclusive serverAddressVar
                 void . forConcurrently workers $ \worker ->
                     worker serverAddress sendActions

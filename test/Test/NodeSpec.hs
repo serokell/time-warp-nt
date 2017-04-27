@@ -84,13 +84,13 @@ spec = describe "Node" $ do
                                 return ()
 
                 let server = node (simpleNodeEndPoint transport) serverGen BinaryP ("server" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
-                        NodeAction [listener] $ \sendActions -> do
+                        NodeAction (const [listener]) $ \sendActions -> do
                             putSharedExclusive serverAddressVar (nodeId _node)
                             takeSharedExclusive clientFinished
                             putSharedExclusive serverFinished ()
 
                 let client = node (simpleNodeEndPoint transport) clientGen BinaryP ("client" :: String, 24 :: Int) defaultNodeEnvironment $ \_node ->
-                        NodeAction [listener] $ \sendActions -> do
+                        NodeAction (const [listener]) $ \sendActions -> do
                             serverAddress <- readSharedExclusive serverAddressVar
                             forM_ [1..attempts] $ \i -> withConnectionTo sendActions serverAddress $ \peerData -> Conversation $ \cactions -> do
                                 True <- return $ peerData == ("server", 42)
@@ -129,7 +129,7 @@ spec = describe "Node" $ do
                                 return ()
 
                 node (simpleNodeEndPoint transport) gen BinaryP ("some string" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
-                    NodeAction [listener] $ \sendActions -> do
+                    NodeAction (const [listener]) $ \sendActions -> do
                         forM_ [1..attempts] $ \i -> withConnectionTo sendActions (nodeId _node) $ \peerData -> Conversation $ \cactions -> do
                             True <- return $ peerData == ("some string", 42)
                             _ <- send cactions (Parcel i (Payload 32))
@@ -163,7 +163,7 @@ spec = describe "Node" $ do
                             --liftIO . putStrLn $ "Thread killed successfully!"
                             return ()
                     node (simpleNodeEndPoint transport) gen BinaryP () env $ \_node ->
-                        NodeAction [] $ \sendActions -> do
+                        NodeAction (const []) $ \sendActions -> do
                             timeout "client waiting for ACK" 5000000 $
                                 flip catch handleThreadKilled $ withConnectionTo sendActions peerAddr $ \peerData -> Conversation $ \cactions -> do
                                     _ :: Maybe Parcel <- recv cactions

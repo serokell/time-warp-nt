@@ -48,7 +48,7 @@ main = do
 
     runProduction $ usingLoggerName "receiver" $ do
         node (simpleNodeEndPoint transport) prng BinaryP () defaultNodeEnvironment $ \_ ->
-            NodeAction [pingListener noPong] $ \_ -> do
+            NodeAction (const [pingListener noPong]) $ \_ -> do
                 threadDelay (fromIntegral duration :: Second)
   where
     pingListener noPong =

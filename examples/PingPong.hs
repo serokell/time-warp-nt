@@ -69,8 +69,8 @@ worker anId generator peerIds = pingWorker generator
                 \peerData -> Conversation (pong peerId)
             loop gen'
 
-listeners :: NodeId -> [Listener Packing BS.ByteString Production]
-listeners anId = [pongListener]
+listeners :: NodeId -> BS.ByteString -> [Listener Packing BS.ByteString Production]
+listeners anId = const [pongListener]
     where
     pongListener :: ListenerAction Packing BS.ByteString Production
     pongListener = ListenerActionConversation $ \peerData peerId (cactions :: ConversationActions Pong Ping Production) -> do

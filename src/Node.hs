@@ -232,7 +232,9 @@ nodeConversationActions _ _ packing inchan outchan =
                 pure Nothing
             Input t -> pure (Just t)
 
-data NodeAction packing peerData m t = NodeAction [Listener packing peerData m] (SendActions packing peerData m -> m t)
+data NodeAction packing peerData m t =
+    NodeAction (peerData -> [Listener packing peerData m])
+               (SendActions packing peerData m -> m t)
 
 simpleNodeEndPoint
     :: NT.Transport m
@@ -279,19 +281,19 @@ node mkEndPoint prng packing peerData nodeEnv k = do
     rec { let nId = LL.nodeId llnode
         ; let endPoint = LL.nodeEndPoint llnode
         ; let nodeUnit = Node nId endPoint (LL.nodeStatistics llnode)
-        ; let NodeAction listeners act = k nodeUnit
+        ; let NodeAction mkListeners act = k nodeUnit
           -- Index the listeners by message name, for faster lookup.
           -- TODO: report conflicting names, or statically eliminate them using
           -- DataKinds and TypeFamilies.
-        ; let listenerIndex :: ListenerIndex packing peerData m
-              (listenerIndex, _conflictingNames) = makeListenerIndex listeners
+        ; let listenerIndices :: peerData -> ListenerIndex packing peerData m
+              listenerIndices = fmap (fst . makeListenerIndex) mkListeners
         ; llnode <- LL.startNode
               packing
               peerData
               (mkEndPoint . LL.nodeState)
               prng
               nodeEnv
-              (handlerInOut llnode listenerIndex)
+              (handlerInOut llnode listenerIndices)
         ; let sendActions = nodeSendActions llnode packing
         }
     let unexceptional = do
@@ -318,13 +320,14 @@ node mkEndPoint prng packing peerData nodeEnv k = do
     -- message name, then choose a listener and fork a thread to run it.
     handlerInOut
         :: LL.Node packing peerData m
-        -> ListenerIndex packing peerData m
+        -> (peerData -> ListenerIndex packing peerData m)
         -> peerData
         -> LL.NodeId
         -> ChannelIn m
         -> ChannelOut m
         -> m ()
-    handlerInOut nodeUnit listenerIndex peerData peerId inchan outchan = do
+    handlerInOut nodeUnit listenerIndices peerData peerId inchan outchan = do
+        let listenerIndex = listenerIndices peerData
         input <- recvNext inchan packing
         case input of
             End -> logDebug "handlerInOut : unexpected end of input"

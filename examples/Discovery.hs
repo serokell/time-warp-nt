@@ -68,8 +68,8 @@ worker anId generator discovery = pingWorker generator
                         Nothing -> error "Unexpected end of input"
             loop gen'
 
-listeners :: NodeId -> [Listener Packing BS.ByteString Production]
-listeners anId = [pongListener]
+listeners :: NodeId -> BS.ByteString -> [Listener Packing BS.ByteString Production]
+listeners anId = const [pongListener]
     where
     pongListener :: ListenerAction Packing BS.ByteString Production
     pongListener = ListenerActionConversation $ \peerData peerId (cactions :: ConversationActions Pong Void Production) -> do
