@@ -27,10 +27,12 @@ import           Mockable                       (Production, delay, fork, realTi
                                                  runProduction)
 import qualified Network.Transport.Abstract     as NT
 import           Network.Transport.Concrete     (concrete)
-import           Node                           (ListenerAction (..), Node (..),
-                                                 NodeAction (..), defaultNodeEnvironment,
-                                                 node, nodeEndPoint, sendTo,
-                                                 simpleNodeEndPoint)
+import           Node                           (Conversation (..),
+                                                 ConversationActions (..),
+                                                 ListenerAction (..), Node (..),
+                                                 NodeAction (..), SendActions (..),
+                                                 defaultNodeEnvironment, node,
+                                                 nodeEndPoint, simpleNodeEndPoint)
 import           Node.Internal                  (NodeId (..))
 import           Node.Message                   (BinaryP (..))
 
