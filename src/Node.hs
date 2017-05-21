@@ -158,7 +158,7 @@ hoistSendActions nat rnat SendActions {..} = SendActions withConnectionTo'
         Conversation l -> Conversation $ \cactions -> rnat (l (hoistConversationActions nat cactions))
 
 type ListenerIndex packing peerData m =
-    Map MessageName (ListenerAction packing peerData m)
+    Map MessageName (Listener packing peerData m)
 
 makeListenerIndex :: [Listener packing peerData m]
                   -> (ListenerIndex packing peerData m, [MessageName])
@@ -233,7 +233,7 @@ nodeConversationActions _ _ packing inchan outchan =
             Input t -> pure (Just t)
 
 data NodeAction packing peerData m t =
-    NodeAction (peerData -> [Listener packing peerData m])
+    NodeAction (peerData -> m [Listener packing peerData m])
                (SendActions packing peerData m -> m t)
 
 simpleNodeEndPoint
@@ -285,8 +285,8 @@ node mkEndPoint prng packing peerData nodeEnv k = do
           -- Index the listeners by message name, for faster lookup.
           -- TODO: report conflicting names, or statically eliminate them using
           -- DataKinds and TypeFamilies.
-        ; let listenerIndices :: peerData -> ListenerIndex packing peerData m
-              listenerIndices = fmap (fst . makeListenerIndex) mkListeners
+        ; let listenerIndices :: peerData -> m (ListenerIndex packing peerData m)
+              listenerIndices = fmap (fst . makeListenerIndex) <$> mkListeners
         ; llnode <- LL.startNode
               packing
               peerData
@@ -320,14 +320,14 @@ node mkEndPoint prng packing peerData nodeEnv k = do
     -- message name, then choose a listener and fork a thread to run it.
     handlerInOut
         :: LL.Node packing peerData m
-        -> (peerData -> ListenerIndex packing peerData m)
+        -> (peerData -> m (ListenerIndex packing peerData m))
         -> peerData
         -> LL.NodeId
         -> ChannelIn m
         -> ChannelOut m
         -> m ()
     handlerInOut nodeUnit listenerIndices peerData peerId inchan outchan = do
-        let listenerIndex = listenerIndices peerData
+        listenerIndex <- listenerIndices peerData
         input <- recvNext inchan packing
         case input of
             End -> logDebug "handlerInOut : unexpected end of input"

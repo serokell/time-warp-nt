@@ -3,13 +3,13 @@
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE RecursiveDo           #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE StandaloneDeriving    #-}
 {-# LANGUAGE TemplateHaskell       #-}
 {-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeFamilies          #-}
-{-# LANGUAGE RankNTypes            #-}
 
 module Test.Util
        ( makeTCPTransport
@@ -50,22 +50,20 @@ import           Data.Binary                 (Binary (..))
 import qualified Data.ByteString             as LBS
 import qualified Data.List                   as L
 import qualified Data.Set                    as S
-import           Data.Time.Units             (Microsecond, Millisecond, Second, TimeUnit)
+import           Data.Time.Units             (Microsecond, Second, TimeUnit)
 import           GHC.Generics                (Generic)
 import           Mockable.Class              (Mockable)
-import           Mockable.Concurrent         (delay, forConcurrently, fork, cancel,
-                                              async, withAsync, wait, Concurrently,
-                                              Delay, Async)
-import           Mockable.SharedExclusive    (newSharedExclusive, putSharedExclusive,
-                                              takeSharedExclusive, SharedExclusive,
-                                              readSharedExclusive, tryPutSharedExclusive)
+import           Mockable.Concurrent         (Async, Concurrently, Delay, delay,
+                                              forConcurrently, fork, wait, withAsync)
 import           Mockable.Exception          (Catch, Throw, catch, throw)
 import           Mockable.Production         (Production (..))
+import           Mockable.SharedExclusive    (SharedExclusive, newSharedExclusive,
+                                              putSharedExclusive, readSharedExclusive,
+                                              takeSharedExclusive)
 import qualified Network.Transport           as NT (Transport)
-import           Network.Transport.Abstract  (closeTransport, Transport)
 import           Network.Transport.Concrete  (concrete)
-import qualified Network.Transport.TCP       as TCP
 import qualified Network.Transport.InMemory  as InMemory
+import qualified Network.Transport.TCP       as TCP
 import           Serokell.Util.Concurrent    (modifyTVarS)
 import           System.Random               (mkStdGen)
 import           Test.QuickCheck             (Property)
@@ -74,11 +72,11 @@ import           Test.QuickCheck.Gen         (choose)
 import           Test.QuickCheck.Modifiers   (getLarge)
 import           Test.QuickCheck.Property    (Testable (..), failed, reason, succeeded)
 
-import           Node                        (ConversationActions (..), Listener,
-                                              ListenerAction (..), Message (..),
+import           Node                        (Conversation (..), ConversationActions (..),
+                                              Listener, ListenerAction (..), Message (..),
                                               NodeAction (..), NodeId, SendActions (..),
-                                              Worker, node, nodeId, defaultNodeEnvironment,
-                                              simpleNodeEndPoint, Conversation (..))
+                                              Worker, defaultNodeEnvironment, node,
+                                              nodeId, simpleNodeEndPoint)
 import           Node.Message                (BinaryP (..))
 
 -- | Run a computation, but kill it if it takes more than a given number of
@@ -103,11 +101,11 @@ timeout str us m = do
     let timeoutAction = do
             delay us
             putSharedExclusive var (Left . error $ str ++ " : timeout after " ++ show us)
-    withAsync action $ \actionPromise -> do
-        withAsync timeoutAction $ \timeoutPromise -> do
+    withAsync action $ \__actionPromise -> do
+        withAsync timeoutAction $ \__timeoutPromise -> do
             choice <- readSharedExclusive var
             case choice of
-                Left e -> throw e
+                Left e  -> throw e
                 Right t -> return t
 
 -- * Parcel
@@ -231,7 +229,7 @@ sendAll
     -> m ()
 sendAll ConversationStyle sendActions peerId msgs =
     timeout "sendAll" 30000000 $
-        void . withConnectionTo sendActions peerId $ \peerData ->
+        void . withConnectionTo sendActions peerId $ \__peerData ->
             Conversation $ \cactions -> forM_ msgs $
                 \msg -> do
                     send cactions msg
@@ -280,7 +278,7 @@ makeTCPTransport bind hostAddr port qdisc = do
             }
     choice <- TCP.createTransport (TCP.Addressable (TCP.TCPAddrInfo bind port ((,) hostAddr))) tcpParams
     case choice of
-        Left err -> error (show err)
+        Left err        -> error (show err)
         Right transport -> return transport
 
 -- * Test template
@@ -302,7 +300,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
     serverFinished <- newSharedExclusive
 
     let server = node (simpleNodeEndPoint transport) prng1 BinaryP () defaultNodeEnvironment $ \serverNode -> do
-            NodeAction (const listeners) $ \_ -> do
+            NodeAction (const $ pure listeners) $ \_ -> do
                 -- Give our address to the client.
                 putSharedExclusive serverAddressVar (nodeId serverNode)
                 -- Don't stop until the client has finished.
@@ -312,8 +310,8 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
                 -- Allow the client to stop.
                 putSharedExclusive serverFinished ()
 
-    let client = node (simpleNodeEndPoint transport) prng2 BinaryP () defaultNodeEnvironment $ \clientNode ->
-            NodeAction (const []) $ \sendActions -> do
+    let client = node (simpleNodeEndPoint transport) prng2 BinaryP () defaultNodeEnvironment $ \__clientNode ->
+            NodeAction (const $ pure []) $ \sendActions -> do
                 serverAddress <- takeSharedExclusive serverAddressVar
                 void . forConcurrently workers $ \worker ->
                     worker serverAddress sendActions
