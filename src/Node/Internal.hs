@@ -7,12 +7,12 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures             #-}
 {-# LANGUAGE NamedFieldPuns             #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE RecursiveDo                #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE StandaloneDeriving         #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
 module Node.Internal (
@@ -22,6 +22,9 @@ module Node.Internal (
     defaultNodeEnvironment,
     NodeEndPoint(..),
     simpleNodeEndPoint,
+    ReceiveDelay,
+    noReceiveDelay,
+    constantReceiveDelay,
     NodeState(..),
     nodeId,
     nodeEndPointAddress,
@@ -43,41 +46,42 @@ module Node.Internal (
   ) where
 
 import           Control.Exception             hiding (bracket, catch, finally, throw)
-import           Control.Monad                 (forM_, forM, when)
+import           Control.Monad                 (forM, forM_, when)
 import           Control.Monad.Fix             (MonadFix)
-import           Data.Int                      (Int64)
 import           Data.Binary                   as Bin
 import           Data.Binary.Get               as Bin
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as BS
 import qualified Data.ByteString.Builder.Extra as BS
 import qualified Data.ByteString.Lazy          as LBS
-import           Data.Foldable                 (foldlM, foldl')
+import           Data.Foldable                 (foldl', foldlM)
 import           Data.Hashable                 (Hashable)
+import           Data.Int                      (Int64)
 import           Data.Map.Strict               (Map)
 import qualified Data.Map.Strict               as Map
-import           Data.Set                      (Set)
-import qualified Data.Set                      as Set
+import           Data.Monoid
 import           Data.NonEmptySet              (NonEmptySet)
 import qualified Data.NonEmptySet              as NESet
-import           Data.Monoid
-import           Data.Typeable
+import           Data.Set                      (Set)
+import qualified Data.Set                      as Set
 import           Data.Time.Units               (Microsecond)
+import           Data.Typeable
 import           Formatting                    (sformat, shown, (%))
 import           GHC.Generics                  (Generic)
 import qualified Mockable.Channel              as Channel
 import           Mockable.Class
 import           Mockable.Concurrent
+import           Mockable.CurrentTime          (CurrentTime, currentTime)
 import           Mockable.Exception
+import qualified Mockable.Metrics              as Metrics
 import           Mockable.SharedAtomic
 import           Mockable.SharedExclusive
-import           Mockable.CurrentTime          (CurrentTime, currentTime)
-import qualified Mockable.Metrics              as Metrics
 import qualified Network.Transport             as NT (EventErrorCode (EventConnectionLost, EventEndPointFailed, EventTransportFailed))
 import qualified Network.Transport.Abstract    as NT
-import           System.Random                 (Random, StdGen, random)
-import           System.Wlog                   (WithLogger, logDebug, logError, logWarning)
 import qualified Node.Message                  as Message
+import           System.Random                 (Random, StdGen, random)
+import           System.Wlog                   (WithLogger, logDebug, logError,
+                                                logWarning)
 
 -- | A 'NodeId' wraps a network-transport endpoint address
 newtype NodeId = NodeId NT.EndPointAddress
@@ -170,6 +174,15 @@ defaultNodeEnvironment = NodeEnvironment {
       nodeAckTimeout = 30000000
     }
 
+-- | Computation in m of a delay (or no delay).
+type ReceiveDelay m = m (Maybe Microsecond)
+
+noReceiveDelay :: Applicative m => ReceiveDelay m
+noReceiveDelay = pure Nothing
+
+constantReceiveDelay :: Applicative m => Microsecond -> ReceiveDelay m
+constantReceiveDelay = pure . Just
+
 -- | A 'Node' is a network-transport 'EndPoint' with bidirectional connection
 --   state and a thread to dispatch network-transport events.
 data Node packingType peerData (m :: * -> *) = Node {
@@ -180,6 +193,12 @@ data Node packingType peerData (m :: * -> *) = Node {
      , nodeState            :: SharedAtomicT m (NodeState peerData m)
      , nodePackingType      :: packingType
      , nodePeerData         :: peerData
+       -- | How long to wait before dequeueing an event from the
+       --   network-transport receive queue, where Nothing means
+       --   instantaneous (different from a 0 delay).
+       --   The term is evaluated once for each dequeued event, immediately
+       --   before dequeueing it.
+     , nodeReceiveDelay     :: ReceiveDelay m
      }
 
 nodeId :: Node packingType peerData m -> NodeId
@@ -291,10 +310,10 @@ data PeerStatistics = PeerStatistics {
       pstRunningHandlersRemote :: !Int
       -- | How many handlers are running right now for locally-iniaiated
       --   bidirectional connections to this peer.
-    , pstRunningHandlersLocal :: !Int
+    , pstRunningHandlersLocal  :: !Int
       -- | How many bytes have been received by running handlers for this
       --   peer.
-    , pstLiveBytes :: !Int
+    , pstLiveBytes             :: !Int
     }
 
 pstNull :: PeerStatistics -> Bool
@@ -408,7 +427,7 @@ instance Show (HandlerProvenance peerData m t) where
 
 handlerProvenancePeer :: HandlerProvenance peerData m t -> NT.EndPointAddress
 handlerProvenancePeer provenance = case provenance of
-    Local peer _ -> peer
+    Local peer _    -> peer
     Remote peer _ _ -> peer
 
 -- TODO: revise these computations to make them numerically stable (or maybe
@@ -574,20 +593,26 @@ startNode
        , Ord (ThreadId m), Show (ThreadId m)
        , Mockable CurrentTime m, Mockable Metrics.Metrics m
        , Mockable SharedExclusive m
+       , Mockable Delay m
        , Message.Serializable packingType peerData
        , MonadFix m, WithLogger m )
     => packingType
     -> peerData
     -> (Node packingType peerData m -> NodeEndPoint m)
+    -> (Node packingType peerData m -> m (Maybe Microsecond))
+    -- ^ Use the node (lazily) to determine a delay in microseconds to wait
+    --   before dequeueing the next network-transport event (see
+    --   nodeReceiveDelay).
     -> StdGen
     -- ^ A source of randomness, for generating nonces.
     -> NodeEnvironment m
     -> (peerData -> NodeId -> ChannelIn m -> ChannelOut m -> m ())
     -- ^ Handle incoming bidirectional connections.
     -> m (Node packingType peerData m)
-startNode packingType peerData mkNodeEndPoint prng nodeEnv handlerOut = do
+startNode packingType peerData mkNodeEndPoint mkReceiveDelay prng nodeEnv handlerOut = do
     rec { let nodeEndPoint = mkNodeEndPoint node
         ; mEndPoint <- newNodeEndPoint nodeEndPoint
+        ; let receiveDelay = mkReceiveDelay node
         ; node <- case mEndPoint of
               Left err -> throw err
               Right endPoint -> do
@@ -601,6 +626,7 @@ startNode packingType peerData mkNodeEndPoint prng nodeEnv handlerOut = do
                                 , nodeState            = sharedState
                                 , nodePackingType      = packingType
                                 , nodePeerData         = peerData
+                                , nodeReceiveDelay     = receiveDelay
                                 }
                       ; dispatcherThread <- async $
                             nodeDispatcher node handlerOut
@@ -609,6 +635,7 @@ startNode packingType peerData mkNodeEndPoint prng nodeEnv handlerOut = do
                       }
                   return node
         }
+    logDebug $ sformat ("startNode, we are " % shown % "") (nodeId node)
     return node
 
 -- | Stop a 'Node', closing its network transport and end point.
@@ -660,10 +687,10 @@ data ConnectionState peerData m =
 
 instance Show (ConnectionState peerData m) where
     show term = case term of
-        WaitingForPeerData -> "WaitingForPeerData"
-        PeerDataParseFailure -> "PeerDataParseFailure"
-        WaitingForHandshake _ _ -> "WaitingForHandshake"
-        HandshakeFailure -> "HandshakeFailure"
+        WaitingForPeerData            -> "WaitingForPeerData"
+        PeerDataParseFailure          -> "PeerDataParseFailure"
+        WaitingForHandshake _ _       -> "WaitingForHandshake"
+        HandshakeFailure              -> "HandshakeFailure"
         FeedingApplicationHandler _ _ -> "FeedingApplicationHandler"
 
 data PeerState peerData =
@@ -735,6 +762,7 @@ nodeDispatcher
        , Ord (ThreadId m), Mockable Bracket m, Mockable SharedExclusive m
        , Mockable Channel.Channel m, Mockable Throw m, Mockable Catch m
        , Mockable CurrentTime m, Mockable Metrics.Metrics m
+       , Mockable Delay m
        , Message.Serializable packingType peerData
        , MonadFix m, WithLogger m, Show (ThreadId m) )
     => Node packingType peerData m
@@ -748,10 +776,14 @@ nodeDispatcher node handlerInOut =
     nstate :: SharedAtomicT m (NodeState peerData m)
     nstate = nodeState node
 
+    receiveDelay :: ReceiveDelay m
+    receiveDelay = nodeReceiveDelay node
+
     endpoint = nodeEndPoint node
 
     loop :: DispatcherState peerData m -> m ()
     loop !state = do
+      _ <- receiveDelay >>= maybe (return ()) delay
       event <- NT.receive endpoint
       case event of
 
@@ -1110,7 +1142,7 @@ nodeDispatcher node handlerInOut =
             -- Removing it from the peers map is more involved.
             let peersUpdater existing = case existing of
                     GotPeerData peerData neset -> case NESet.delete connid neset of
-                        Nothing -> Nothing
+                        Nothing     -> Nothing
                         Just neset' -> Just (GotPeerData peerData neset')
                     ExpectingPeerData neset mleader -> case NESet.delete connid neset of
                         Nothing -> Nothing
@@ -1120,7 +1152,7 @@ nodeDispatcher node handlerInOut =
                                 -- The connection which is giving the peer data
                                 -- has closed! That's ok, just forget about it
                                 -- and the partial decode of that data.
-                                True -> Just (ExpectingPeerData neset' Nothing)
+                                True  -> Just (ExpectingPeerData neset' Nothing)
                                 False -> Just (ExpectingPeerData neset' mleader)
             let state' = state {
                       dsConnections = Map.delete connid (dsConnections state)
@@ -1144,7 +1176,7 @@ nodeDispatcher node handlerInOut =
                 -- event can be posted without ConnectionClosed, as an
                 -- optimization.
                 let connids = case it of
-                        GotPeerData _ neset -> NESet.toList neset
+                        GotPeerData _ neset       -> NESet.toList neset
                         ExpectingPeerData neset _ -> NESet.toList neset
                 -- For every connection to that peer we'll plug the channel with
                 -- Nothing and remove it from the map.
@@ -1562,7 +1594,7 @@ connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} (Node
         -- Somebody else sent it, so we can proceed.
         False -> return ()
         -- We are responsible for sending it.
-        True -> sendPeerData conn
+        True  -> sendPeerData conn
 
     sendPeerData conn = do
         let serializedPeerData = Message.packMsg nodePackingType nodePeerData
@@ -1645,7 +1677,7 @@ connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} (Node
 
         case mconn of
             -- Throwing the error will induce the bracket resource releaser
-            Left err -> throw err
+            Left err   -> throw err
             Right conn -> return conn
 
     -- Update the OutboundConnectionState at this peer to no longer show
@@ -1683,7 +1715,7 @@ connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} (Node
                                   return $ Just (ComingUp (n - 1) excl')
                           let established' = case merr of
                                   Nothing -> established + 1
-                                  Just _ -> established
+                                  Just _  -> established
                           return . Just $ Stable comingUp' established' goingDown transmission
 
                 _ -> throw (InternalError "finishConnecting : impossible")
