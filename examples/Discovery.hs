@@ -87,8 +87,8 @@ makeNode transport i = do
             if i == 0
             -- First node uses itself as initial peer, else it'll panic because
             -- its initial peer appears to be down.
-            then K.Node (K.Peer host (fromIntegral port)) anId
-            else K.Node (K.Peer host (fromIntegral (port - 1))) (makeId (i - 1))
+            then K.Peer host (fromIntegral port)
+            else K.Peer host (fromIntegral (port - 1))
     let kademliaConfig = K.KademliaConfiguration host (fromIntegral port) anId
     let prng1 = mkStdGen (2 * i)
     let prng2 = mkStdGen ((2 * i) + 1)

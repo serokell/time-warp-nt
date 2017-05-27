@@ -60,13 +60,13 @@ kademliaDiscovery
     :: forall m i .
        (MonadIO m, Binary i, Ord i, Show i)
     => KademliaConfiguration i
-    -> K.Node i
+    -> K.Peer
     -- ^ A known peer, necessary in order to join the network.
     --   If there are no other peers in the network, use this node's id.
     -> EndPointAddress
     -- ^ Local endpoint address. Will store it in the DHT.
     -> m (NetworkDiscovery KademliaDiscoveryErrorCode m)
-kademliaDiscovery configuration initialPeer myAddress = do
+kademliaDiscovery configuration peer myAddress = do
     let kid :: KSerialize i
         kid = KSerialize (kademliaId configuration)
     let port :: Int
@@ -81,7 +81,7 @@ kademliaDiscovery configuration initialPeer myAddress = do
     let discoverPeers = liftIO $ kademliaDiscoverPeers kademliaInst peersTVar
     let close = liftIO $ K.close kademliaInst
     -- Join the network and store the local 'EndPointAddress'.
-    _ <- liftIO $ kademliaJoinAndUpdate kademliaInst peersTVar initialPeer
+    _ <- liftIO $ kademliaJoinAndUpdate kademliaInst peersTVar peer
     liftIO $ K.store kademliaInst kid (KSerialize myAddress)
     pure $ NetworkDiscovery knownPeers discoverPeers close
 
@@ -92,10 +92,10 @@ kademliaJoinAndUpdate
        ( Binary i, Ord i )
     => K.KademliaInstance (KSerialize i) (KSerialize EndPointAddress)
     -> TVar.TVar (M.Map (K.Node (KSerialize i)) EndPointAddress)
-    -> K.Node i
+    -> K.Peer
     -> IO (Either (DiscoveryError KademliaDiscoveryErrorCode) (S.Set EndPointAddress))
-kademliaJoinAndUpdate kademliaInst peersTVar initialPeer = do
-    result <- K.joinNetwork kademliaInst initialPeer'
+kademliaJoinAndUpdate kademliaInst peersTVar peer = do
+    result <- K.joinNetwork kademliaInst peer
     case result of
         K.NodeBanned -> pure $ Left (DiscoveryError KademliaNodeBanned "Node is banned by network")
         K.IDClash -> pure $ Left (DiscoveryError KademliaIdClash "ID clash in network")
@@ -108,10 +108,6 @@ kademliaJoinAndUpdate kademliaInst peersTVar initialPeer = do
             endPointAddresses <- fmap (M.mapMaybe id) (kademliaLookupEndPointAddresses kademliaInst M.empty peerList)
             STM.atomically $ TVar.writeTVar peersTVar endPointAddresses
             pure $ Right (S.fromList (M.elems endPointAddresses))
-  where
-    initialPeer' :: K.Node (KSerialize i)
-    initialPeer' = case initialPeer of
-        K.Node peer nid -> K.Node peer (KSerialize nid)
 
 -- | Update the known peers cache.
 --
