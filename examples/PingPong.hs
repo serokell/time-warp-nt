@@ -66,7 +66,7 @@ worker anId generator peerIds = pingWorker generator
                         Just Pong -> liftIO . putStrLn $ show anId ++ " heard PONG from " ++ show peerId
                         Nothing -> error "Unexpected end of input"
             forM_ peerIds $ \peerId -> withConnectionTo sendActions peerId $
-                \peerData -> Conversation (pong peerId)
+                \_ -> Conversation (pong peerId)
             loop gen'
 
 listeners :: Applicative m
