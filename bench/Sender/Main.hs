@@ -28,11 +28,10 @@ import           Mockable                       (Production, delay, fork, realTi
 import qualified Network.Transport.Abstract     as NT
 import           Network.Transport.Concrete     (concrete)
 import           Node                           (Conversation (..),
-                                                 ConversationActions (..),
-                                                 ListenerAction (..), Node (..),
+                                                 ConversationActions (..), Node (Node),
                                                  NodeAction (..), SendActions (..),
-                                                 defaultNodeEnvironment, node,
-                                                 nodeEndPoint, simpleNodeEndPoint)
+                                                 defaultNodeEnvironment, noReceiveDelay,
+                                                 node, nodeEndPoint, simpleNodeEndPoint)
 import           Node.Internal                  (NodeId (..))
 import           Node.Message                   (BinaryP (..))
 
@@ -82,8 +81,8 @@ main = do
             let pingWorkers = liftA2 (pingSender prngWork payloadBound startTime msgRate)
                                      tasksIds
                                      (zip [0, msgNum..] nodeIds)
-            node (simpleNodeEndPoint transport) prngNode BinaryP () defaultNodeEnvironment $ \node' ->
-                NodeAction (const []) $ \sactions -> do
+            node (simpleNodeEndPoint transport) (const noReceiveDelay) prngNode BinaryP () defaultNodeEnvironment $ \node' ->
+                NodeAction (const $ pure []) $ \sactions -> do
                     drones <- forM nodeIds (startDrone node')
                     _ <- forM pingWorkers (fork . flip ($) sactions)
                     delay (fromIntegral duration :: Second)
@@ -102,7 +101,7 @@ main = do
             lift . lift $ withConnectionTo sendActions peerId $
                 \_ -> Conversation $ \cactions -> do
                     send cactions (Ping sMsgId payload)
-                    Just (Pong sMsgId' payload') <- recv cactions
+                    Just (Pong __sMsgId' __payload') <- recv cactions
                     return ()
 
             PingState{..}    <- get

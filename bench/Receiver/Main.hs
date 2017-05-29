@@ -19,10 +19,11 @@ import           Mockable                   (Production (runProduction))
 
 import           Bench.Network.Commons      (MeasureEvent (..), Ping (..), Pong (..),
                                              loadLogConfig, logMeasure)
-import qualified Network.Transport.TCP      as TCP
 import           Network.Transport.Concrete (concrete)
-import           Node                       (ListenerAction (..), NodeAction (..), node,
-                                             defaultNodeEnvironment, ConversationActions (..),
+import qualified Network.Transport.TCP      as TCP
+import           Node                       (ConversationActions (..),
+                                             ListenerAction (..), NodeAction (..),
+                                             defaultNodeEnvironment, noReceiveDelay, node,
                                              simpleNodeEndPoint)
 import           Node.Message               (BinaryP (..))
 import           ReceiverOptions            (Args (..), argsParser)
@@ -47,8 +48,8 @@ main = do
     let prng = mkStdGen 0
 
     runProduction $ usingLoggerName "receiver" $ do
-        node (simpleNodeEndPoint transport) prng BinaryP () defaultNodeEnvironment $ \_ ->
-            NodeAction (const [pingListener noPong]) $ \_ -> do
+        node (simpleNodeEndPoint transport) (const noReceiveDelay) prng BinaryP () defaultNodeEnvironment $ \_ ->
+            NodeAction (const $ pure [pingListener noPong]) $ \_ -> do
                 threadDelay (fromIntegral duration :: Second)
   where
     pingListener noPong =

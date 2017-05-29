@@ -19,6 +19,9 @@ module Node (
       Node(..)
     , LL.NodeEnvironment(..)
     , LL.defaultNodeEnvironment
+    , LL.ReceiveDelay
+    , LL.noReceiveDelay
+    , LL.constantReceiveDelay
     , nodeEndPointAddress
     , NodeAction(..)
     , node
@@ -158,7 +161,7 @@ hoistSendActions nat rnat SendActions {..} = SendActions withConnectionTo'
         Conversation l -> Conversation $ \cactions -> rnat (l (hoistConversationActions nat cactions))
 
 type ListenerIndex packing peerData m =
-    Map MessageName (ListenerAction packing peerData m)
+    Map MessageName (Listener packing peerData m)
 
 makeListenerIndex :: [Listener packing peerData m]
                   -> (ListenerIndex packing peerData m, [MessageName])
@@ -233,12 +236,12 @@ nodeConversationActions _ _ packing inchan outchan =
             Input t -> pure (Just t)
 
 data NodeAction packing peerData m t =
-    NodeAction (peerData -> [Listener packing peerData m])
+    NodeAction (peerData -> m [Listener packing peerData m])
                (SendActions packing peerData m -> m t)
 
 simpleNodeEndPoint
     :: NT.Transport m
-    -> SharedAtomicT m (LL.NodeState peerData m)
+    -> m (LL.Statistics m)
     -> LL.NodeEndPoint m
 simpleNodeEndPoint transport _ = LL.NodeEndPoint {
       newNodeEndPoint = NT.newEndPoint transport
@@ -270,14 +273,15 @@ node
        , MonadFix m, Serializable packing MessageName, WithLogger m
        , Serializable packing peerData
        )
-    => (SharedAtomicT m (LL.NodeState peerData m) -> LL.NodeEndPoint m)
+    => (m (LL.Statistics m) -> LL.NodeEndPoint m)
+    -> (m (LL.Statistics m) -> LL.ReceiveDelay m)
     -> StdGen
     -> packing
     -> peerData
     -> LL.NodeEnvironment m
     -> (Node m -> NodeAction packing peerData m t)
     -> m t
-node mkEndPoint prng packing peerData nodeEnv k = do
+node mkEndPoint mkReceiveDelay prng packing peerData nodeEnv k = do
     rec { let nId = LL.nodeId llnode
         ; let endPoint = LL.nodeEndPoint llnode
         ; let nodeUnit = Node nId endPoint (LL.nodeStatistics llnode)
@@ -285,12 +289,13 @@ node mkEndPoint prng packing peerData nodeEnv k = do
           -- Index the listeners by message name, for faster lookup.
           -- TODO: report conflicting names, or statically eliminate them using
           -- DataKinds and TypeFamilies.
-        ; let listenerIndices :: peerData -> ListenerIndex packing peerData m
-              listenerIndices = fmap (fst . makeListenerIndex) mkListeners
+        ; let listenerIndices :: peerData -> m (ListenerIndex packing peerData m)
+              listenerIndices = fmap (fst . makeListenerIndex) <$> mkListeners
         ; llnode <- LL.startNode
               packing
               peerData
-              (mkEndPoint . LL.nodeState)
+              (mkEndPoint . LL.nodeStatistics)
+              (mkReceiveDelay . LL.nodeStatistics)
               prng
               nodeEnv
               (handlerInOut llnode listenerIndices)
@@ -320,14 +325,14 @@ node mkEndPoint prng packing peerData nodeEnv k = do
     -- message name, then choose a listener and fork a thread to run it.
     handlerInOut
         :: LL.Node packing peerData m
-        -> (peerData -> ListenerIndex packing peerData m)
+        -> (peerData -> m (ListenerIndex packing peerData m))
         -> peerData
         -> LL.NodeId
         -> ChannelIn m
         -> ChannelOut m
         -> m ()
     handlerInOut nodeUnit listenerIndices peerData peerId inchan outchan = do
-        let listenerIndex = listenerIndices peerData
+        listenerIndex <- listenerIndices peerData
         input <- recvNext inchan packing
         case input of
             End -> logDebug "handlerInOut : unexpected end of input"
