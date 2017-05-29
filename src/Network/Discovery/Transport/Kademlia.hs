@@ -9,6 +9,7 @@ module Network.Discovery.Transport.Kademlia
        , kademliaDiscovery
        ) where
 
+import           Control.Arrow               (second)
 import qualified Control.Concurrent.STM      as STM
 import qualified Control.Concurrent.STM.TVar as TVar
 import           Control.Monad               (forM)
@@ -38,10 +39,9 @@ instance Binary i => K.Serialize (KSerialize i) where
 
 -- | Configuration for a Kademlia node.
 data KademliaConfiguration i = KademliaConfiguration {
-      kademliaHost :: String
-    , kademliaPort :: Word16
-      -- ^ The port on which to run the server (it's UDP)
-    , kademliaId   :: i
+      kademliaBindAddress     :: (String, Word16)
+    , kademliaExternalAddress :: (String, Word16)
+    , kademliaId              :: i
       -- ^ Some value to use as the identifier for this node. To use it, it must
       --   have a 'Binary' instance. You may want to take a random value, and
       --   it should serialize to something long enough for your expected
@@ -69,11 +69,10 @@ kademliaDiscovery
 kademliaDiscovery configuration peer myAddress = do
     let kid :: KSerialize i
         kid = KSerialize (kademliaId configuration)
-    let port :: Int
-        port = fromIntegral (kademliaPort configuration)
     -- A Kademlia instance to do the DHT magic.
     kademliaInst :: K.KademliaInstance (KSerialize i) (KSerialize EndPointAddress)
-        <- liftIO $ K.create (kademliaHost configuration) port kid
+        <- liftIO $ K.create (second fromIntegral $ kademliaBindAddress configuration)
+                             (second fromIntegral $ kademliaExternalAddress configuration) kid
     -- A TVar to cache the set of known peers at the last use of 'discoverPeers'
     peersTVar :: TVar.TVar (M.Map (K.Node (KSerialize i)) EndPointAddress)
         <- liftIO . TVar.newTVarIO $ M.empty
