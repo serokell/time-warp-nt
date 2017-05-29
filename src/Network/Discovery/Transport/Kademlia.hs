@@ -9,7 +9,6 @@ module Network.Discovery.Transport.Kademlia
        , kademliaDiscovery
        ) where
 
-import           Control.Arrow               (second)
 import qualified Control.Concurrent.STM      as STM
 import qualified Control.Concurrent.STM.TVar as TVar
 import           Control.Monad               (forM)
@@ -71,8 +70,8 @@ kademliaDiscovery configuration peer myAddress = do
         kid = KSerialize (kademliaId configuration)
     -- A Kademlia instance to do the DHT magic.
     kademliaInst :: K.KademliaInstance (KSerialize i) (KSerialize EndPointAddress)
-        <- liftIO $ K.create (second fromIntegral $ kademliaBindAddress configuration)
-                             (second fromIntegral $ kademliaExternalAddress configuration) kid
+        <- liftIO $ K.create (kademliaBindAddress configuration)
+                             (kademliaExternalAddress configuration) kid
     -- A TVar to cache the set of known peers at the last use of 'discoverPeers'
     peersTVar :: TVar.TVar (M.Map (K.Node (KSerialize i)) EndPointAddress)
         <- liftIO . TVar.newTVarIO $ M.empty
