@@ -27,8 +27,8 @@ import           Mockable                       (Production, delay, fork, realTi
                                                  runProduction)
 import qualified Network.Transport.Abstract     as NT
 import           Network.Transport.Concrete     (concrete)
-import           Node                           (ListenerAction (..), NodeAction (..), node,
-                                                 nodeEndPoint, Node(..), SendActions (..),
+import           Node                           (NodeAction (..), node, Node(Node),
+                                                 nodeEndPoint, SendActions (..),
                                                  Conversation (..), ConversationActions (..),
                                                  defaultNodeEnvironment, simpleNodeEndPoint,
                                                  noReceiveDelay)
@@ -82,7 +82,7 @@ main = do
                                      tasksIds
                                      (zip [0, msgNum..] nodeIds)
             node (simpleNodeEndPoint transport) (const noReceiveDelay) prngNode BinaryP () defaultNodeEnvironment $ \node' ->
-                NodeAction (const [pongListener]) $ \sactions -> do
+                NodeAction (const []) $ \sactions -> do
                     drones <- forM nodeIds (startDrone node')
                     _ <- forM pingWorkers (fork . flip ($) sactions)
                     delay (fromIntegral duration :: Second)
@@ -101,7 +101,7 @@ main = do
             lift . lift $ withConnectionTo sendActions peerId $
                 \_ -> Conversation $ \cactions -> do
                     send cactions (Ping sMsgId payload)
-                    Just (Pong sMsgId' payload') <- recv cactions
+                    Just (Pong _ _) <- recv cactions
                     return ()
 
             PingState{..}    <- get
