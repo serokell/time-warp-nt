@@ -304,13 +304,14 @@ node
        )
     => (m (LL.Statistics m) -> LL.NodeEndPoint m)
     -> (m (LL.Statistics m) -> LL.ReceiveDelay m)
+    -> (m (LL.Statistics m) -> LL.ReceiveDelay m)
     -> StdGen
     -> packing
     -> peerData
     -> LL.NodeEnvironment m
     -> (Node m -> NodeAction packing peerData m t)
     -> m t
-node mkEndPoint mkReceiveDelay prng packing peerData nodeEnv k = do
+node mkEndPoint mkReceiveDelay mkConnectDelay prng packing peerData nodeEnv k = do
     rec { let nId = LL.nodeId llnode
         ; let endPoint = LL.nodeEndPoint llnode
         ; let nodeUnit = Node nId endPoint (LL.nodeStatistics llnode)
@@ -325,6 +326,7 @@ node mkEndPoint mkReceiveDelay prng packing peerData nodeEnv k = do
               peerData
               (mkEndPoint . LL.nodeStatistics)
               (mkReceiveDelay . LL.nodeStatistics)
+              (mkConnectDelay . LL.nodeStatistics)
               prng
               nodeEnv
               (handlerIn listenerIndex sendActions)
