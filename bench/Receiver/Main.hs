@@ -53,7 +53,7 @@ main = do
                 threadDelay (fromIntegral duration :: Second)
   where
     pingListener noPong =
-        ListenerActionConversation $ \_ peerId cactions -> do
+        ListenerActionConversation $ \_ __peerId cactions -> do
             Just (Ping mid payload) <- recv cactions
             logMeasure PingReceived mid payload
             unless noPong $ do

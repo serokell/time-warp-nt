@@ -129,6 +129,7 @@ spec = describe "Node" $ do
                 node (simpleNodeEndPoint transport) (const noReceiveDelay) gen BinaryP ("some string" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
                     NodeAction (const $ pure [listener]) $ \sendActions -> do
                         forM_ [1..attempts] $ \i -> withConnectionTo sendActions (nodeId _node) $ \peerData -> Conversation $ \cactions -> do
+                            True <- return $ peerData == ("some string", 42)
                             _ <- send cactions (Parcel i (Payload 32))
                             response <- recv cactions
                             case response of
