@@ -78,7 +78,7 @@ import           Node                        (Conversation (..), ConversationAct
                                               Worker, defaultNodeEnvironment,
                                               noReceiveDelay, node, nodeId,
                                               simpleNodeEndPoint)
-import           Node.Message                (BinaryP (..))
+import           Node.Message                (BinaryP (..), runBinaryP)
 
 -- | Run a computation, but kill it if it takes more than a given number of
 --   Microseconds to complete. If that happens, log using a given string
@@ -300,7 +300,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
     clientFinished <- newSharedExclusive
     serverFinished <- newSharedExclusive
 
-    let server = node (simpleNodeEndPoint transport) (const noReceiveDelay) prng1 BinaryP () defaultNodeEnvironment $ \serverNode -> do
+    let server = node (simpleNodeEndPoint transport) (const noReceiveDelay) prng1 BinaryP runBinaryP () defaultNodeEnvironment $ \serverNode -> do
             NodeAction (const $ pure listeners) $ \_ -> do
                 -- Give our address to the client.
                 putSharedExclusive serverAddressVar (nodeId serverNode)
@@ -311,7 +311,7 @@ deliveryTest transport_ testState workers listeners = runProduction $ do
                 -- Allow the client to stop.
                 putSharedExclusive serverFinished ()
 
-    let client = node (simpleNodeEndPoint transport) (const noReceiveDelay) prng2 BinaryP () defaultNodeEnvironment $ \clientNode ->
+    let client = node (simpleNodeEndPoint transport) (const noReceiveDelay) prng2 BinaryP runBinaryP () defaultNodeEnvironment $ \clientNode ->
             NodeAction (const $ pure []) $ \sendActions -> do
                 serverAddress <- takeSharedExclusive serverAddressVar
                 void . forConcurrently workers $ \worker ->

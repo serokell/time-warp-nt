@@ -28,7 +28,7 @@ import           Network.Transport.Abstract           (Transport (..))
 import           Network.Transport.Concrete           (concrete)
 import qualified Network.Transport.TCP                as TCP
 import           Node
-import           Node.Message                         (BinaryP (..))
+import           Node.Message                         (BinaryP (..), runBinaryP)
 import           System.Environment                   (getArgs)
 import           System.Random
 
@@ -97,7 +97,7 @@ makeNode transport i = do
         prng1 = mkStdGen (2 * i)
         prng2 = mkStdGen ((2 * i) + 1)
     liftIO . putStrLn $ "Starting node " ++ show i
-    fork $ node (simpleNodeEndPoint transport) (const noReceiveDelay) prng1 BinaryP (B8.pack "my peer data!") defaultNodeEnvironment $ \node' ->
+    fork $ node (simpleNodeEndPoint transport) (const noReceiveDelay) prng1 BinaryP runBinaryP (B8.pack "my peer data!") defaultNodeEnvironment $ \node' ->
         NodeAction (listeners . nodeId $ node') $ \sactions -> do
             liftIO . putStrLn $ "Making discovery for node " ++ show i
             discovery <- K.kademliaDiscovery kademliaConfig initialPeer (nodeEndPointAddress node')

@@ -56,8 +56,10 @@ Library
                       , bytestring
                       , deepseq
                       , data-default
+                      , either
                       , exceptions
                       , formatting
+                      , free
                       , hashable
                       , kademlia
                       , lens
@@ -73,6 +75,7 @@ Library
                       , universum
                       , serokell-util
                       , stm
+                      , store
                       , text
                       , text-format
                       , time
