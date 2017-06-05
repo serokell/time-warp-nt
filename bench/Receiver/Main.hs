@@ -25,7 +25,7 @@ import           Node                       (ConversationActions (..),
                                              ListenerAction (..), NodeAction (..),
                                              defaultNodeEnvironment, noReceiveDelay, node,
                                              simpleNodeEndPoint)
-import           Node.Message               (BinaryP (..))
+import           Node.Message               (BinaryP (..), runBinaryP)
 import           ReceiverOptions            (Args (..), argsParser)
 
 main :: IO ()
@@ -48,7 +48,7 @@ main = do
     let prng = mkStdGen 0
 
     runProduction $ usingLoggerName "receiver" $ do
-        node (simpleNodeEndPoint transport) (const noReceiveDelay) prng BinaryP () defaultNodeEnvironment $ \_ ->
+        node (simpleNodeEndPoint transport) (const noReceiveDelay) prng BinaryP runBinaryP () defaultNodeEnvironment $ \_ ->
             NodeAction (const $ pure [pingListener noPong]) $ \_ -> do
                 threadDelay (fromIntegral duration :: Second)
   where

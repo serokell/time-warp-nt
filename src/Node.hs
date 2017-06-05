@@ -54,30 +54,35 @@ module Node (
 
     ) where
 
-import           Control.Exception          (SomeException)
-import           Control.Monad              (unless)
-import           Control.Monad.Fix          (MonadFix)
-import qualified Data.Binary.Get            as Bin
-import qualified Data.ByteString            as BS
-import qualified Data.ByteString.Lazy       as LBS
-import           Data.Map.Strict            (Map)
-import qualified Data.Map.Strict            as M
-import           Data.Proxy                 (Proxy (..))
-import           Formatting                 (sformat, shown, (%))
-import qualified Mockable.Channel           as Channel
+import           Control.Arrow                    (second)
+import           Control.Exception                (SomeException)
+import           Control.Monad.Fix                (MonadFix)
+import           Control.Monad.Trans              (lift)
+import           Control.Monad.Trans.Either       (left, runEitherT)
+import           Control.Monad.Trans.Free.Church  (iterTM)
+import qualified Control.Monad.Trans.State.Strict as St
+import           Data.Bool                        (bool)
+import qualified Data.ByteString.Lazy             as LBS
+import           Data.Map.Strict                  (Map)
+import qualified Data.Map.Strict                  as M
+import           Data.Proxy                       (Proxy (..))
+import           Data.Text                        (Text)
+import           Formatting                       (sformat, shown, stext, (%))
+import qualified Mockable.Channel                 as Channel
 import           Mockable.Class
 import           Mockable.Concurrent
 import           Mockable.CurrentTime
 import           Mockable.Exception
-import qualified Mockable.Metrics           as Metrics
+import qualified Mockable.Metrics                 as Metrics
 import           Mockable.SharedAtomic
 import           Mockable.SharedExclusive
-import qualified Network.Transport.Abstract as NT
-import           Node.Internal              (ChannelIn, ChannelOut)
-import qualified Node.Internal              as LL
+import qualified Network.Transport.Abstract       as NT
+import           Node.Internal                    (ChannelIn, ChannelOut)
+import qualified Node.Internal                    as LL
 import           Node.Message
-import           System.Random              (StdGen)
-import           System.Wlog                (WithLogger, logDebug, logError, logInfo)
+import           System.Random                    (StdGen)
+import           System.Wlog                      (WithLogger, logDebug, logError,
+                                                   logInfo)
 
 data Node m = Node {
       nodeId         :: LL.NodeId
@@ -87,8 +92,6 @@ data Node m = Node {
 
 nodeEndPointAddress :: Node m -> NT.EndPointAddress
 nodeEndPointAddress (Node addr _ _) = LL.nodeEndPointAddress addr
-
-data Input t = Input t | NoParse | End
 
 type Worker packing peerData m = SendActions packing peerData m -> m ()
 
@@ -182,12 +185,13 @@ nodeSendActions
        , Mockable CurrentTime m, Mockable Metrics.Metrics m
        , Mockable Delay m
        , WithLogger m, MonadFix m
-       , Serializable packing peerData
+       , SimpleSerializable packing peerData
        , Packable packing MessageName )
     => LL.Node packing peerData m
     -> packing
+    -> (forall a . UnpackMonad packing a -> m a)
     -> SendActions packing peerData m
-nodeSendActions nodeUnit packing =
+nodeSendActions nodeUnit packing runP =
     SendActions nodeWithConnectionTo
   where
 
@@ -201,7 +205,7 @@ nodeSendActions nodeUnit packing =
             Conversation (converse :: ConversationActions snd rcv m -> m t) -> do
                 let msgName = messageName (Proxy :: Proxy snd)
                     cactions :: ConversationActions snd rcv m
-                    cactions = nodeConversationActions nodeUnit nodeId packing inchan outchan
+                    cactions = nodeConversationActions nodeUnit nodeId packing runP inchan outchan
                 LL.writeChannel outchan . LBS.toChunks $ packMsg packing msgName
                 converse cactions
 
@@ -216,10 +220,11 @@ nodeConversationActions
     => LL.Node packing peerData m
     -> LL.NodeId
     -> packing
-    -> ChannelIn m
+    -> (forall a . UnpackMonad packing a -> m a)
+    -> ChannelIn (Unconsumed packing) m
     -> ChannelOut m
     -> ConversationActions snd rcv m
-nodeConversationActions _ _ packing inchan outchan =
+nodeConversationActions _ _ packing runP inchan outchan =
     ConversationActions nodeSend nodeRecv
     where
 
@@ -227,13 +232,12 @@ nodeConversationActions _ _ packing inchan outchan =
         LL.writeChannel outchan . LBS.toChunks $ packMsg packing body
 
     nodeRecv = do
-        next <- recvNext inchan packing
+        next <- recvNext runP inchan packing
         case next of
-            End     -> pure Nothing
-            NoParse -> do
-                logDebug "Unexpected end of conversation input"
+            Left e -> do
+                logDebug $ sformat ("Recv aborted: "%stext) e
                 pure Nothing
-            Input t -> pure (Just t)
+            Right t -> pure (Just t)
 
 data NodeAction packing peerData m t =
     NodeAction (peerData -> m [Listener packing peerData m])
@@ -271,17 +275,18 @@ node
        , Mockable Delay m
        , Mockable CurrentTime m, Mockable Metrics.Metrics m
        , MonadFix m, Serializable packing MessageName, WithLogger m
-       , Serializable packing peerData
+       , SimpleSerializable packing peerData
        )
     => (m (LL.Statistics m) -> LL.NodeEndPoint m)
     -> (m (LL.Statistics m) -> LL.ReceiveDelay m)
     -> StdGen
     -> packing
+    -> (forall a . UnpackMonad packing a -> m a)
     -> peerData
     -> LL.NodeEnvironment m
     -> (Node m -> NodeAction packing peerData m t)
     -> m t
-node mkEndPoint mkReceiveDelay prng packing peerData nodeEnv k = do
+node mkEndPoint mkReceiveDelay prng packing runP peerData nodeEnv k = do
     rec { let nId = LL.nodeId llnode
         ; let endPoint = LL.nodeEndPoint llnode
         ; let nodeUnit = Node nId endPoint (LL.nodeStatistics llnode)
@@ -299,7 +304,7 @@ node mkEndPoint mkReceiveDelay prng packing peerData nodeEnv k = do
               prng
               nodeEnv
               (handlerInOut llnode listenerIndices)
-        ; let sendActions = nodeSendActions llnode packing
+        ; let sendActions = nodeSendActions llnode packing runP
         }
     let unexceptional = do
             t <- act sendActions
@@ -328,46 +333,75 @@ node mkEndPoint mkReceiveDelay prng packing peerData nodeEnv k = do
         -> (peerData -> m (ListenerIndex packing peerData m))
         -> peerData
         -> LL.NodeId
-        -> ChannelIn m
+        -> ChannelIn (Unconsumed packing) m
         -> ChannelOut m
         -> m ()
     handlerInOut nodeUnit listenerIndices peerData peerId inchan outchan = do
         listenerIndex <- listenerIndices peerData
-        input <- recvNext inchan packing
+        input <- recvNext runP inchan packing
         case input of
-            End -> logDebug "handlerInOut : unexpected end of input"
-            NoParse -> logDebug "handlerInOut : failed to parse message name"
-            Input msgName -> do
+            Left e -> logDebug $ sformat ("handlerInOut: recv of message name aborted: "%stext) e
+            Right msgName -> do
                 let listener = M.lookup msgName listenerIndex
                 case listener of
                     Just (ListenerActionConversation action) ->
-                        let cactions = nodeConversationActions nodeUnit peerId packing inchan outchan
+                        let cactions = nodeConversationActions nodeUnit peerId packing runP inchan outchan
                         in  action peerData peerId cactions
                     Nothing -> error ("handlerInOut : no listener for " ++ show msgName)
 
 recvNext
     :: ( Mockable Channel.Channel m
        , Unpackable packing thing
-       , WithLogger m)
-    => ChannelIn m
+       )
+    => (forall a . UnpackMonad packing a -> m a)
+    -> ChannelIn (Unconsumed packing) m
     -> packing
-    -> m (Input thing)
-recvNext (LL.ChannelIn channel) packing = do
-    mbs <- Channel.readChannel channel
-    case mbs of
-        Nothing -> return End
-        Just bs -> do
-            (trailing, outcome) <- go (Bin.pushChunk (unpackMsg packing) bs)
-            unless (BS.null trailing) (Channel.unGetChannel channel (Just trailing))
-            return outcome
-    where
-    go decoder = case decoder of
-        Bin.Fail trailing _ err ->
-            logError (sformat ("recvNext: Decoding failed " % shown) err)
-            >> return (trailing, NoParse)
-        Bin.Done trailing _ thing -> return (trailing, Input thing)
-        Bin.Partial next -> do
-            mbs <- Channel.readChannel channel
-            case mbs of
-                Nothing -> return (BS.empty, End)
-                Just bs -> go (next (Just bs))
+    -> m (Either Text thing)
+recvNext runM (LL.ChannelIn channel) packing =
+    convertResult packing channel (runPM (hoistUnpackMsg runM $ unpackMsg packing))
+  where
+    runPM m = St.evalStateT (iterTM (=<< getInp) m) False
+    getInp = St.get >>= bool readNext logErr
+    logErr = lift $ left (Nothing, "unexpected end")
+    readNext = do
+        mbs <- lift $ lift $ Channel.readChannel channel
+        case mbs of
+            Left Nothing -> St.put True
+            _            -> pure ()
+        return mbs
+    convertResult _ channel m = do
+        (unconsumed, res) <- either (second Left) (second Right) <$> runEitherT m
+        maybe (pure ()) (Channel.unGetChannel channel . Right) unconsumed
+        return res
+
+
+
+-- recvNext
+--     :: ( Mockable Channel.Channel m
+--        , Unpackable packing thing
+--        , WithLogger m)
+--     => ChannelIn m
+--     -> packing
+--     -> m (Input thing)
+-- recvNext (LL.ChannelIn channel) packing = do
+--     (trailing, outcome) <- go (unpackMsg packing)
+--     -- mbs <- Channel.readChannel channel
+--     -- case mbs of
+--     --     Nothing -> return End
+--     --     Just bs -> do
+--     --         (trailing, outcome) <- go (Bin.pushChunk (unpackMsg packing) bs)
+--     --         unless (BS.null trailing) (Channel.unGetChannel channel (Just trailing))
+--     --         return outcome
+--     where
+--     go decoder = case decoder of
+--         Result trailing (Left err) ->
+--             logError (sformat ("recvNext: Decoding failed " % stext) err)
+--             >> return (trailing, NoParse)
+--         Result trailing (Right thing) -> return (trailing, Input thing)
+--         Partial i next -> do
+--             bs <- tryReadRequired i channel
+--             if BS.length bs < i
+--                then return (bs, End)
+--                else go (next bs)
+
+

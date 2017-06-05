@@ -91,12 +91,12 @@ instance Binary NodeId
 
 -- | The state of a Node, to be held in a shared atomic cell because other
 --   threads will mutate it in order to set up bidirectional connections.
-data NodeState peerData m = NodeState {
+data NodeState peerData unconsumed m = NodeState {
       _nodeStateGen                    :: !StdGen
       -- ^ To generate nonces.
     , _nodeStateOutboundUnidirectional :: !(Map NT.EndPointAddress (SomeHandler m))
       -- ^ Handlers for each locally-initiated unidirectional connection.
-    , _nodeStateOutboundBidirectional  :: !(Map NT.EndPointAddress (Map Nonce (SomeHandler m, ChannelIn m, Int -> m (), SharedExclusiveT m peerData, NT.ConnectionBundle, Promise m (), Bool)))
+    , _nodeStateOutboundBidirectional  :: !(Map NT.EndPointAddress (Map Nonce (SomeHandler m, ChannelIn unconsumed m, Int -> m (), SharedExclusiveT m peerData, NT.ConnectionBundle, Promise m (), Bool)))
       -- ^ Handlers for each nonce which we generated (locally-initiated
       --   bidirectional connections).
       --   The bool indicates whether we have received an ACK for this.
@@ -128,7 +128,7 @@ instance Exception Timeout
 initialNodeState
     :: ( Mockable Metrics.Metrics m, Mockable SharedAtomic m )
     => StdGen
-    -> m (SharedAtomicT m (NodeState peerData m))
+    -> m (SharedAtomicT m (NodeState peerData unconsumed m))
 initialNodeState prng = do
     !stats <- initialStatistics
     let nodeState = NodeState {
@@ -190,7 +190,7 @@ data Node packingType peerData (m :: * -> *) = Node {
      , nodeCloseEndPoint    :: m ()
      , nodeDispatcherThread :: Promise m ()
      , nodeEnvironment      :: NodeEnvironment m
-     , nodeState            :: SharedAtomicT m (NodeState peerData m)
+     , nodeState            :: SharedAtomicT m (NodeState peerData (Message.Unconsumed packingType) m)
      , nodePackingType      :: packingType
      , nodePeerData         :: peerData
        -- | How long to wait before dequeueing an event from the
@@ -230,7 +230,7 @@ data NodeException =
 instance Exception NodeException
 
 -- | Input from the wire.
-newtype ChannelIn m = ChannelIn (Channel.ChannelT m (Maybe BS.ByteString))
+newtype ChannelIn unconsumed m = ChannelIn (Channel.ChannelT m (Either (Maybe BS.ByteString) unconsumed))
 
 -- | Output to the wire.
 newtype ChannelOut m = ChannelOut (NT.Connection m)
@@ -594,7 +594,7 @@ startNode
        , Mockable CurrentTime m, Mockable Metrics.Metrics m
        , Mockable SharedExclusive m
        , Mockable Delay m
-       , Message.Serializable packingType peerData
+       , Message.SimpleSerializable packingType peerData
        , MonadFix m, WithLogger m )
     => packingType
     -> peerData
@@ -606,7 +606,7 @@ startNode
     -> StdGen
     -- ^ A source of randomness, for generating nonces.
     -> NodeEnvironment m
-    -> (peerData -> NodeId -> ChannelIn m -> ChannelOut m -> m ())
+    -> (peerData -> NodeId -> ChannelIn (Message.Unconsumed packingType) m -> ChannelOut m -> m ())
     -- ^ Handle incoming bidirectional connections.
     -> m (Node packingType peerData m)
 startNode packingType peerData mkNodeEndPoint mkReceiveDelay prng nodeEnv handlerOut = do
@@ -659,7 +659,7 @@ stopNode Node {..} = do
     -- only if some handler is blocked indefinitely or looping.
     wait nodeDispatcherThread
 
-data ConnectionState peerData m =
+data ConnectionState peerData unconsumed m =
 
       -- | This connection cannot proceed because peer data has not been
       --   received and parsed.
@@ -683,9 +683,9 @@ data ConnectionState peerData m =
       --
       --   Second argument will be run with the number of bytes each time more
       --   bytes are received. It's used to update shared metrics.
-    | FeedingApplicationHandler !(ChannelIn m) (Int -> m ())
+    | FeedingApplicationHandler !(ChannelIn unconsumed m) (Int -> m ())
 
-instance Show (ConnectionState peerData m) where
+instance Show (ConnectionState peerData unconsumed m) where
     show term = case term of
         WaitingForPeerData            -> "WaitingForPeerData"
         PeerDataParseFailure          -> "PeerDataParseFailure"
@@ -710,14 +710,14 @@ instance Show (PeerState peerData) where
         ExpectingPeerData peers mleader -> "ExpectingPeerData " ++ show peers ++ " " ++ show (fmap fst mleader)
         GotPeerData _ peers -> "GotPeerData " ++ show peers
 
-data DispatcherState peerData m = DispatcherState {
-      dsConnections :: Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData m)
+data DispatcherState peerData unconsumed m = DispatcherState {
+      dsConnections :: Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData unconsumed m)
     , dsPeers :: Map NT.EndPointAddress (PeerState peerData)
     }
 
-deriving instance Show (DispatcherState peerData m)
+deriving instance Show (DispatcherState peerData unconsumed m)
 
-initialDispatcherState :: DispatcherState peerData m
+initialDispatcherState :: DispatcherState peerData unconsumed m
 initialDispatcherState = DispatcherState Map.empty Map.empty
 
 -- | Wait for every running handler in a node's state to finish. Exceptions are
@@ -763,17 +763,17 @@ nodeDispatcher
        , Mockable Channel.Channel m, Mockable Throw m, Mockable Catch m
        , Mockable CurrentTime m, Mockable Metrics.Metrics m
        , Mockable Delay m
-       , Message.Serializable packingType peerData
+       , Message.SimpleSerializable packingType peerData
        , MonadFix m, WithLogger m, Show (ThreadId m) )
     => Node packingType peerData m
-    -> (peerData -> NodeId -> ChannelIn m -> ChannelOut m -> m ())
+    -> (peerData -> NodeId -> ChannelIn (Message.Unconsumed packingType) m -> ChannelOut m -> m ())
     -> m ()
 nodeDispatcher node handlerInOut =
     loop initialDispatcherState
 
     where
 
-    nstate :: SharedAtomicT m (NodeState peerData m)
+    nstate :: SharedAtomicT m (NodeState peerData (Message.Unconsumed packingType) m)
     nstate = nodeState node
 
     receiveDelay :: ReceiveDelay m
@@ -781,7 +781,7 @@ nodeDispatcher node handlerInOut =
 
     endpoint = nodeEndPoint node
 
-    loop :: DispatcherState peerData m -> m ()
+    loop :: DispatcherState peerData (Message.Unconsumed packingType) m -> m ()
     loop !state = do
       _ <- receiveDelay >>= maybe (return ()) delay
       event <- NT.receive endpoint
@@ -820,7 +820,7 @@ nodeDispatcher node handlerInOut =
     -- inbound but since our end point has closed, we won't take them. So here
     -- we have to plug every remaining input channel.
     endPointClosed
-        :: DispatcherState peerData m
+        :: DispatcherState peerData (Message.Unconsumed packingType) m
         -> m ()
     endPointClosed state = do
         let connections = Map.toList (dsConnections state)
@@ -830,7 +830,7 @@ nodeDispatcher node handlerInOut =
         when (not (null connections)) $ do
             forM_ connections $ \(_, st) -> case st of
                 (_, FeedingApplicationHandler (ChannelIn channel) _) -> do
-                    Channel.writeChannel channel Nothing
+                    Channel.writeChannel channel (Left Nothing)
                 _ -> return ()
 
         -- Must plug input channels for all un-acked outbound connections, and
@@ -842,7 +842,7 @@ nodeDispatcher node handlerInOut =
             forM_ outbounds $ \(_, ChannelIn chan, _, peerDataVar, _, _, acked) -> do
                 when (not acked) $ do
                    _ <- tryPutSharedExclusive peerDataVar (error "no peer data because local node has gone down")
-                   Channel.writeChannel chan Nothing
+                   Channel.writeChannel chan (Left Nothing)
             return (st, ())
 
         _ <- waitForRunningHandlers node
@@ -857,10 +857,10 @@ nodeDispatcher node handlerInOut =
             else throw (InternalError "EndPoint prematurely closed")
 
     connectionOpened
-        :: DispatcherState peerData m
+        :: DispatcherState peerData (Message.Unconsumed packingType) m
         -> NT.ConnectionId
         -> NT.EndPointAddress
-        -> m (DispatcherState peerData m)
+        -> m (DispatcherState peerData (Message.Unconsumed packingType) m)
     connectionOpened state connid peer = case Map.lookup connid (dsConnections state) of
 
         Just (peer', _) -> do
@@ -899,10 +899,10 @@ nodeDispatcher node handlerInOut =
                         }
 
     received
-        :: DispatcherState peerData m
+        :: DispatcherState peerData (Message.Unconsumed packingType) m
         -> NT.ConnectionId
         -> [BS.ByteString]
-        -> m (DispatcherState peerData m)
+        -> m (DispatcherState peerData (Message.Unconsumed packingType) m)
     received state connid chunks = case Map.lookup connid (dsConnections state) of
 
         Nothing -> do
@@ -928,7 +928,7 @@ nodeDispatcher node handlerInOut =
                 -- the attempt to decode the peer data.
                 Nothing -> do
                     let decoder :: Bin.Decoder peerData
-                        decoder = Message.unpackMsg (nodePackingType node)
+                        decoder = Message.unpackMsgSimple (nodePackingType node)
                     case Bin.pushChunk decoder (BS.concat chunks) of
                         Bin.Fail _ _ err -> do
                             logWarning $ sformat ("failed to decode peer data from " % shown % ": got error " % shown) peer err
@@ -984,9 +984,9 @@ nodeDispatcher node handlerInOut =
                     :: NT.ConnectionId
                     -> peerData
                     -> BS.ByteString
-                    -> Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData m)
+                    -> Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData (Message.Unconsumed packingType) m)
                     -> NT.ConnectionId
-                    -> Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData m)
+                    -> Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData (Message.Unconsumed packingType) m)
                 awaitHandshake leader peerData trailing map connid = case leader == connid of
 
                     True -> Map.update (\(peer, _) -> Just (peer, WaitingForHandshake peerData trailing)) connid map
@@ -1048,7 +1048,7 @@ nodeDispatcher node handlerInOut =
                           -- Establish the other direction in a separate thread.
                           (_, incrBytes) <- spawnHandler nstate provenance handler
                           let bss = LBS.toChunks ws'
-                          Channel.writeChannel channel (Just (BS.concat bss))
+                          Channel.writeChannel channel (Left $ Just (BS.concat bss))
                           incrBytes $ sum (fmap BS.length bss)
                           return $ state {
                                 dsConnections = Map.insert connid (peer, FeedingApplicationHandler (ChannelIn channel) incrBytes) (dsConnections state)
@@ -1099,7 +1099,7 @@ nodeDispatcher node handlerInOut =
                               Just (Just (ChannelIn channel, incrBytes, peerDataVar)) -> do
                                   putSharedExclusive peerDataVar peerData
                                   let bs = LBS.toStrict ws'
-                                  Channel.writeChannel channel (Just bs)
+                                  Channel.writeChannel channel (Left $ Just bs)
                                   incrBytes $ BS.length bs
                                   return $ state {
                                         dsConnections = Map.insert connid (peer, FeedingApplicationHandler (ChannelIn channel) incrBytes) (dsConnections state)
@@ -1118,14 +1118,14 @@ nodeDispatcher node handlerInOut =
         -- explcitly close it down when the handler finishes by adding some
         -- mutable cell to FeedingApplicationHandler?
         Just (_peer, FeedingApplicationHandler (ChannelIn channel) incrBytes) -> do
-            Channel.writeChannel channel (Just (BS.concat chunks))
+            Channel.writeChannel channel (Left $ Just (BS.concat chunks))
             incrBytes $ sum (fmap BS.length chunks)
             return state
 
     connectionClosed
-        :: DispatcherState peerData m
+        :: DispatcherState peerData unconsumed m
         -> NT.ConnectionId
-        -> m (DispatcherState peerData m)
+        -> m (DispatcherState peerData unconsumed m)
     connectionClosed state connid = case Map.lookup connid (dsConnections state) of
 
         Nothing -> do
@@ -1136,7 +1136,7 @@ nodeDispatcher node handlerInOut =
             case connState of
                 FeedingApplicationHandler (ChannelIn channel) _ -> do
                     -- Signal end of channel.
-                    Channel.writeChannel channel Nothing
+                    Channel.writeChannel channel (Left Nothing)
                 _ -> return ()
             -- This connection can be removed from the connection states map.
             -- Removing it from the peers map is more involved.
@@ -1161,10 +1161,10 @@ nodeDispatcher node handlerInOut =
             return state'
 
     connectionLost
-        :: DispatcherState peerData m
+        :: DispatcherState peerData unconsumed m
         -> NT.EndPointAddress
         -> NT.ConnectionBundle
-        -> m (DispatcherState peerData m)
+        -> m (DispatcherState peerData unconsumed m)
     connectionLost state peer bundle = do
         -- There must always be 0 connections from the peer, for
         -- network-transport must have posted the ConnectionClosed events for
@@ -1180,13 +1180,13 @@ nodeDispatcher node handlerInOut =
                         ExpectingPeerData neset _ -> NESet.toList neset
                 -- For every connection to that peer we'll plug the channel with
                 -- Nothing and remove it from the map.
-                let folder :: Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData m)
+                let folder :: Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData unconsumed m)
                            -> NT.ConnectionId
-                           -> m (Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData m))
+                           -> m (Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData unconsumed m))
                     folder channels connid = case Map.updateLookupWithKey (\_ _ -> Nothing) connid channels of
                         (Just (_, FeedingApplicationHandler (ChannelIn channel) _), channels') -> do
 
-                            Channel.writeChannel channel Nothing
+                            Channel.writeChannel channel (Left Nothing)
                             return channels'
                         (_, channels') -> return channels'
                 channels' <- foldlM folder (dsConnections state) connids
@@ -1226,7 +1226,7 @@ nodeDispatcher node handlerInOut =
 
         forM_ channelsAndPeerDataVars $ \(ChannelIn chan, peerDataVar) -> do
             _ <- tryPutSharedExclusive peerDataVar (error "no peer data because the connection was lost")
-            Channel.writeChannel chan Nothing
+            Channel.writeChannel chan (Left Nothing)
 
         return state'
 
@@ -1235,14 +1235,14 @@ nodeDispatcher node handlerInOut =
 --   This is applicable to handlers spawned in response to inbound peer
 --   connections, and also for actions which use outbound connections.
 spawnHandler
-    :: forall peerData m t .
+    :: forall peerData unconsumed m t .
        ( Mockable SharedAtomic m, Mockable Throw m, Mockable Catch m
        , Mockable Async m, Ord (ThreadId m)
        , Mockable Metrics.Metrics m, Mockable CurrentTime m
        , WithLogger m
        , MonadFix m )
-    => SharedAtomicT m (NodeState peerData m)
-    -> HandlerProvenance peerData m (ChannelIn m)
+    => SharedAtomicT m (NodeState peerData unconsumed m)
+    -> HandlerProvenance peerData m (ChannelIn unconsumed m)
     -> m t
     -> m (Promise m t, Int -> m ())
 spawnHandler stateVar provenance action =
@@ -1368,7 +1368,7 @@ withInOutChannel
        , Message.Packable packingType peerData )
     => Node packingType peerData m
     -> NodeId
-    -> (peerData -> ChannelIn m -> ChannelOut m -> m a)
+    -> (peerData -> ChannelIn (Message.Unconsumed packingType) m -> ChannelOut m -> m a)
     -> m a
 withInOutChannel node@Node{nodeEnvironment, nodeState} nodeid@(NodeId peer) action = do
     nonce <- modifySharedAtomic nodeState $ \nodeState -> do
