@@ -54,7 +54,6 @@ module Node (
 
     ) where
 
-import           Control.Arrow                    (second)
 import           Control.Exception                (SomeException)
 import           Control.Monad.Fix                (MonadFix)
 import           Control.Monad.Trans              (lift)
@@ -362,15 +361,15 @@ recvNext runM (LL.ChannelIn channel) packing =
   where
     runPM m = St.evalStateT (iterTM (=<< getInp) m) False
     getInp = St.get >>= bool readNext logErr
-    logErr = lift $ left (Nothing, "unexpected end")
+    logErr = lift $ lift (St.put Nothing) *> left "unexpected end"
     readNext = do
-        mbs <- lift $ lift $ Channel.readChannel channel
+        mbs <- lift $ lift $ lift $ Channel.readChannel channel
         case mbs of
             Left Nothing -> St.put True
             _            -> pure ()
         return mbs
     convertResult _ channel m = do
-        (unconsumed, res) <- either (second Left) (second Right) <$> runEitherT m
+        (res, unconsumed) <- St.runStateT (runEitherT m) Nothing
         maybe (pure ()) (Channel.unGetChannel channel . Right) unconsumed
         return res
 
