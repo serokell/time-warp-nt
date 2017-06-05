@@ -25,6 +25,7 @@ module Node.Message
     , BinaryP (..)
     , runBinaryP
     , hoistUnpackMsg
+    , needMoreInput
     ) where
 
 import           Control.Monad.Free              (wrap)
