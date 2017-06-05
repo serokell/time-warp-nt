@@ -117,6 +117,7 @@ class SimpleUnpackable packing thing where
 class Monad (UnpackMonad packing) => UnpackableCtx packing where
     type UnpackMonad packing :: * -> *
     type Unconsumed packing :: *
+    closeUnconsumed :: packing -> Unconsumed packing -> UnpackMonad packing ()
 
 -- | Defines a way to deserealize data with given packing type @p@ and extract object @t@.
 class UnpackableCtx packing => Unpackable packing thing where
@@ -131,21 +132,6 @@ type Serializable packing thing =
     ( Packable packing thing
     , Unpackable packing thing
     )
-
--- data Decoder' a = Partial Int (ByteString -> Decoder' a)
---                 -- ^ Partial contains min. amount of bytes required for decoder to proceed
---                 -- Bytestring provided to decoder is guaranteed to be at least this mount of bytes
---                 | Result ByteString (Either Text a)
---                 -- ^ Result along with unconsumed input
---
--- instance Functor Decoder where
---     fmap f (Partial i g) = Partial i (f . g)
---     fmap f (Result u r)  = Result u $ f <$> r
---
--- fromBinDecoder :: Bin.Decoder a -> Decoder' a
--- fromBinDecoder (Bin.Fail bs _ err) = Result bs $ Left $ T.pack err
--- fromBinDecoder (Bin.Done bs _ res) = Result bs $ Right res
--- fromBinDecoder (Bin.Partial f)     = Partial 1 $ fromBinDecoder . f
 
 bsNonEmptyJust :: BS.ByteString -> Maybe BS.ByteString
 bsNonEmptyJust bs = if BS.null bs then Nothing else Just bs
@@ -173,6 +159,7 @@ instance Bin.Binary t => Packable BinaryP t where
 instance UnpackableCtx BinaryP where
     type (Unconsumed BinaryP) = BS.ByteString
     type (UnpackMonad BinaryP) = Identity
+    closeUnconsumed _ _ = pure ()
 
 instance Bin.Binary t => Unpackable BinaryP t where
     unpackMsg _ = fromBinDecoder $ Bin.runGetIncremental Bin.get

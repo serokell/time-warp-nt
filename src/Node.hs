@@ -372,35 +372,3 @@ recvNext runM (LL.ChannelIn channel) packing =
         (res, unconsumed) <- St.runStateT (runEitherT m) Nothing
         maybe (pure ()) (Channel.unGetChannel channel . Right) unconsumed
         return res
-
-
-
--- recvNext
---     :: ( Mockable Channel.Channel m
---        , Unpackable packing thing
---        , WithLogger m)
---     => ChannelIn m
---     -> packing
---     -> m (Input thing)
--- recvNext (LL.ChannelIn channel) packing = do
---     (trailing, outcome) <- go (unpackMsg packing)
---     -- mbs <- Channel.readChannel channel
---     -- case mbs of
---     --     Nothing -> return End
---     --     Just bs -> do
---     --         (trailing, outcome) <- go (Bin.pushChunk (unpackMsg packing) bs)
---     --         unless (BS.null trailing) (Channel.unGetChannel channel (Just trailing))
---     --         return outcome
---     where
---     go decoder = case decoder of
---         Result trailing (Left err) ->
---             logError (sformat ("recvNext: Decoding failed " % stext) err)
---             >> return (trailing, NoParse)
---         Result trailing (Right thing) -> return (trailing, Input thing)
---         Partial i next -> do
---             bs <- tryReadRequired i channel
---             if BS.length bs < i
---                then return (bs, End)
---                else go (next bs)
-
-
