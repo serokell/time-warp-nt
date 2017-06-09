@@ -5,6 +5,18 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE RankNTypes #-}
 
+{-|
+Module      : JsonLog.JsonLogT
+Description : Monad transformer for JSON logging
+License:      MIT
+Maintainer:   lars.bruenjes@iohk.io
+Stability:    experimental
+Portability:  GHC
+
+This module provides the monad transformer @'JsonLogT'@
+for adding JSON logging to a monad transformer stack.
+-}
+
 module JsonLog.JsonLogT
     ( JsonLogT
     , runWithoutJsonLogT
@@ -46,6 +58,8 @@ import Mockable.SharedExclusive       (SharedExclusiveT, SharedExclusive)
 
 type R = Maybe (MVar Handle, JLTimedEvent -> IO Bool)
 
+-- | Monad transformer @'JsonLogT'@ adds support for JSON logging
+-- to a monad transformer stack.
 newtype JsonLogT m a = JsonLogT (ReaderT R m a)
     deriving (Functor, Applicative, Monad, MonadTrans, MonadIO, MFunctor, 
               MonadThrow, MonadCatch, MonadMask, MonadFix, MonadBase b, LiftLocal)
@@ -150,20 +164,47 @@ instance ( MonadIO m
                     `catchAll` \e ->
                         logWarning $ sformat ("can't write json log: "%shown) e
 
+-- | This function simply discards all JSON log messages.
 runWithoutJsonLogT :: JsonLogT m a -> m a
 runWithoutJsonLogT (JsonLogT m) = runReaderT m Nothing
 
-runJsonLogT :: MonadIO m => Maybe (Handle, JLTimedEvent -> IO Bool) -> JsonLogT m a -> m a
+-- | Runs a computation containing JSON log messages,
+-- either discarding all messages or writing
+-- some of them to a handle.
+runJsonLogT :: MonadIO m 
+            => Maybe (Handle, JLTimedEvent -> IO Bool) -- ^ If @'Nothing'@, JSON log messages are discarded, if @'Just' (h, f)@,
+                                                       -- log messages @e@ are written to handle @h@ if @f e@ returns @True@,
+                                                       -- and are otherwise discarded.
+            -> JsonLogT m a                            -- ^ A monadic computation containing JSON log messages. 
+            -> m a
 runJsonLogT Nothing            m            = runWithoutJsonLogT m
 runJsonLogT (Just (h, decide)) (JsonLogT m) = do
     v <- newMVar h
     runReaderT m $ Just (v, decide)
 
-runJsonLogT' :: MonadIO m => Maybe Handle -> JsonLogT m a -> m a
+-- | Runs a computation containing JSON log messages,
+-- either discarding all messages or writing them to a handle.
+runJsonLogT' :: MonadIO m 
+             => Maybe Handle -- ^ If @'Nothing'@, JSON log messages are discarded, if @'Just' h@,
+                             -- log messages are written to handle @h@.
+             -> JsonLogT m a -- ^ A monadic computation containing JSON log messages. 
+             -> m a
 runJsonLogT' mh = runJsonLogT $ fmap (\h -> (h, const $ return True)) mh
 
-runWithJsonLogT :: MonadIO m => Handle -> (JLTimedEvent -> IO Bool) -> JsonLogT m a -> m a
+-- | Runs a computation containing JSON log messages,
+-- writing some of them to a handle.
+runWithJsonLogT :: MonadIO m 
+                => Handle                    -- ^ The handle to write log messages to. 
+                -> (JLTimedEvent -> IO Bool) -- ^ Monadic predicate to decide whether a given log message
+                                             -- should be written to the handle or be discarded.
+                -> JsonLogT m a              -- ^ A monadic computation containing JSON log messages. 
+                -> m a
 runWithJsonLogT h decide = runJsonLogT $ Just (h, decide)
 
-runWithJsonLogT' :: MonadIO m => Handle -> JsonLogT m a -> m a
+-- | Runs a computation containing JSON log messages,
+-- writing them to a handle.
+runWithJsonLogT' :: MonadIO m 
+                 => Handle       -- ^ The handle to write log messages to. 
+                 -> JsonLogT m a -- ^ A monadic computation containing JSON log messages. 
+                 -> m a
 runWithJsonLogT' = runJsonLogT' . Just

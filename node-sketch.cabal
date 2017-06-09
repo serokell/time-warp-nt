@@ -45,13 +45,13 @@ Library
                         Bench.Network.Commons
 
                         JsonLog
+                        JsonLog.CanJsonLog
+                        JsonLog.Event
+                        JsonLog.JsonLogT
 
   other-modules:        NTP.Packet
                         NTP.Util
                         Data.NonEmptySet
-                        JsonLog.CanJsonLog
-                        JsonLog.Event
-                        JsonLog.JsonLogT
 
   build-depends:        aeson 
                       , async
