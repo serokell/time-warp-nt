@@ -92,13 +92,13 @@ toEvent = JLTimedEvent . fmap toJSON
 -- | Tries to parse a /typed/ event from an /untyped/ one.
 -- Returns a @'Right'@, containing the typed event, if conversion was successful,
 -- otherwise a @'Left'@, containing the unparsed JSON.
-fromEvent :: forall a. FromJSON a => JLTimedEvent -> JLTimed (Either Value a)
-fromEvent = fmap f . runJLTimedEvent
+fromEvent :: forall a. FromJSON a => JLTimedEvent -> Either (JLTimed Value) (JLTimed a)
+fromEvent = f . runJLTimedEvent
   where
-    f :: Value -> Either Value a
-    f v = case fromJSON v of
-        Error _   -> Left v
-        Success x -> Right x
+    f :: JLTimed Value -> Either (JLTimed Value) (JLTimed a)
+    f e@(JLTimed ts v) = case fromJSON v of
+        Error _   -> Left e
+        Success x -> Right (JLTimed ts x)
 
 -- | Creates a timed event, given some content,
 -- by adding the current time as timestamp.
@@ -122,5 +122,5 @@ handleEvent def hs e = go hs
   where
     go []                = def $ runJLTimedEvent e
     go (Handler h : hs') = case fromEvent e of
-        JLTimed ts (Right x) -> h (JLTimed ts x)
-        _                    -> go hs'
+        Right x -> h x
+        _       -> go hs'
