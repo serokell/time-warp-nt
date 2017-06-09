@@ -68,6 +68,7 @@ Library
                       , hashable
                       , kademlia
                       , lens
+                      , lifted-base
                       , log-warper
                       , mmorph
                       , monad-control
