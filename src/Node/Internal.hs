@@ -957,10 +957,11 @@ nodeDispatcher node handlerInOut =
                                     dsConnections = Map.insert connid (peer, PeerDataParseFailure) (dsConnections state)
                                   }
                         Done trailing _ peerData -> do
-                            return $ state {
-                                    dsConnections = foldl' (awaitHandshake connid peerData trailing) (dsConnections state) (NESet.toList connids)
-                                  , dsPeers = Map.insert peer (GotPeerData peerData connids) (dsPeers state)
-                                  }
+                            let state' = state {
+                                      dsConnections = foldl' (awaitHandshake peerData) (dsConnections state) (NESet.toList connids)
+                                    , dsPeers = Map.insert peer (GotPeerData peerData connids) (dsPeers state)
+                                    }
+                            received state' connid [trailing]
                         Partial decoderContinuation -> do
                             return $ state {
                                     dsPeers = Map.insert peer (ExpectingPeerData connids (Just (connid, decoderContinuation))) (dsPeers state)
@@ -983,10 +984,11 @@ nodeDispatcher node handlerInOut =
                                   }
 
                         Done trailing _ peerData -> do
-                            return $ state {
-                                    dsConnections = foldl' (awaitHandshake connid peerData trailing) (dsConnections state) (NESet.toList connids)
-                                  , dsPeers = Map.insert peer (GotPeerData peerData connids) (dsPeers state)
-                                  }
+                            let state' = state {
+                                      dsConnections = foldl' (awaitHandshake peerData) (dsConnections state) (NESet.toList connids)
+                                    , dsPeers = Map.insert peer (GotPeerData peerData connids) (dsPeers state)
+                                    }
+                            received state' connid [trailing]
 
                         Partial decoderContinuation' -> do
                             return $ state {
@@ -1002,17 +1004,14 @@ nodeDispatcher node handlerInOut =
                 -- parse and the data left-over after the parse, which must
                 -- be remembered in the connection state for that id.
                 awaitHandshake
-                    :: NT.ConnectionId
-                    -> peerData
-                    -> BS.ByteString
+                    :: peerData
                     -> Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData m)
                     -> NT.ConnectionId
                     -> Map NT.ConnectionId (NT.EndPointAddress, ConnectionState peerData m)
-                awaitHandshake leader peerData trailing map connid = case leader == connid of
+                awaitHandshake peerData map connid =
 
-                    True -> Map.update (\(peer, _) -> Just (peer, WaitingForHandshake peerData trailing)) connid map
+                    Map.update (\(peer, _) -> Just (peer, WaitingForHandshake peerData BS.empty)) connid map
 
-                    False -> Map.update (\(peer, _) -> Just (peer, WaitingForHandshake peerData BS.empty)) connid map
 
             -- We're waiting for peer data on this connection, but we don't
             -- have an entry for the peer. That's an internal error.
