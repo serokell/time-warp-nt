@@ -351,7 +351,7 @@ node mkEndPoint mkReceiveDelay prng packing peerData nodeEnv k = do
         -> m ()
     handlerInOut nodeUnit listenerIndices peerData peerId inchan outchan = do
         let listenerIndex = listenerIndices peerData
-        input <- recvNext packing messageSizeLimit inchan
+        input <- recvNext packing messageNameSizeLimit inchan
         case input of
             End -> logDebug "handlerInOut : unexpected end of input"
             Input msgName -> do
@@ -363,8 +363,8 @@ node mkEndPoint mkReceiveDelay prng packing peerData nodeEnv k = do
                     Nothing -> error ("handlerInOut : no listener for " ++ show msgName)
     -- Arbitrary limit on the message size...
     -- TODO make it configurable I guess.
-    messageSizeLimit :: Int
-    messageSizeLimit = 256
+    messageNameSizeLimit :: Int
+    messageNameSizeLimit = 256
 
 -- | Try to receive and parse the next message, subject to a limit on the
 --   number of bytes which will be read.

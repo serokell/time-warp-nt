@@ -37,6 +37,8 @@ storeDecoder bs = Partial $ \mbs -> case mbs of
         let (front, back) = BS.splitAt 4 (BS.append bs bs')
         in  if BS.length front == 4
             then storeDecoderBody (NT.decodeWord32 front) BS.empty (Just back)
+            -- In this case, back is empty and front has length strictly less
+            -- than 4, so we have to wait for more input.
             else storeDecoder front
 
 storeDecoderBody
