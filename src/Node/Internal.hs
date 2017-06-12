@@ -245,7 +245,7 @@ closeChannel (ChannelOut conn) = NT.close conn
 -- | Do multiple sends on a 'ChannelOut'.
 writeMany
     :: forall m .
-       ( Monad m, Mockable Throw m )
+       ( Monad m, Mockable Throw m, WithLogger m )
     => Word32 -- ^ Split into chunks of at most this size in bytes. 0 means no split.
     -> ChannelOut m
     -> LBS.ByteString
@@ -257,15 +257,21 @@ writeMany mtu (ChannelOut conn) bss = mapM_ sendUnit units
     units :: [[BS.ByteString]]
     units = fmap LBS.toChunks (chop bss)
     chop :: LBS.ByteString -> [LBS.ByteString]
-    chop | mtu == 0 = pure
-         | otherwise =
-               let mtuInt :: Int64
-                   mtuInt = fromIntegral mtu
-                   chopItUp lbs | LBS.null lbs = []
-                                | otherwise =
-                                      let (front, back) = LBS.splitAt mtuInt lbs
-                                      in  front : chop back
-               in  chopItUp
+    chop lbs
+        | mtu == 0     = [lbs]
+        -- Non-recursive definition for the case when the input is empty, so
+        -- that
+        --   writeMany mtu outChan ""
+        -- still induces a send. Without this case, the list would be empty.
+        | LBS.null lbs = [lbs]
+        | otherwise    =
+              let mtuInt :: Int64
+                  mtuInt = fromIntegral mtu
+                  chopItUp lbs | LBS.null lbs = []
+                               | otherwise =
+                                     let (front, back) = LBS.splitAt mtuInt lbs
+                                     in  front : chopItUp back
+              in  chopItUp lbs
 
 -- | Statistics concerning traffic at this node.
 data Statistics m = Statistics {
@@ -1597,12 +1603,14 @@ connectToPeer
     => Node packingType peerData m
     -> NodeId
     -> m (NT.Connection m)
-connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} (NodeId peer) = do
+connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData, nodeEnvironment} (NodeId peer) = do
     conn <- establish
     sendPeerDataIfNecessary conn
     return conn
 
     where
+
+    mtu = nodeMtu nodeEnvironment
 
     sendPeerDataIfNecessary conn =
         bracketWithException getPeerDataResponsibility
@@ -1617,12 +1625,7 @@ connectToPeer Node{nodeEndPoint, nodeState, nodePackingType, nodePeerData} (Node
 
     sendPeerData conn = do
         let serializedPeerData = packMsg nodePackingType nodePeerData
-        outcome <- NT.send conn (LBS.toChunks serializedPeerData)
-        case outcome of
-            Left err -> do
-                throw err
-            Right () -> do
-                return ()
+        writeMany mtu (ChannelOut conn) serializedPeerData
 
     getPeerDataResponsibility = do
         responsibility <- modifySharedAtomic nodeState $ \nodeState -> do
