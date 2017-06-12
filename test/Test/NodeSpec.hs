@@ -20,7 +20,7 @@ import           Data.Foldable               (for_)
 import qualified Data.Set                    as S
 import           Data.Time.Units             (Microsecond)
 import           Test.Hspec                  (Spec, describe, runIO, afterAll_)
-import           Test.Hspec.QuickCheck       (prop)
+import           Test.Hspec.QuickCheck       (prop, modifyMaxSuccess)
 import           Test.QuickCheck             (Property, ioProperty)
 import           Test.QuickCheck.Modifiers   (NonEmptyList(..), getNonEmpty)
 import           Test.Util                   (HeavyParcel (..), Parcel (..),
@@ -34,7 +34,7 @@ import qualified Network.Transport           as NT (Transport)
 import qualified Network.Transport.Abstract  as NT
                                              (closeTransport, newEndPoint,
                                               closeEndPoint, address, receive)
-import           Network.Transport.TCP       (simpleOnePlaceQDisc)
+import           Network.Transport.TCP       (simpleOnePlaceQDisc, simpleUnboundedQDisc)
 import           Network.QDisc.Fair          (fairQDisc)
 import           Network.Transport.Concrete  (concrete)
 import           Mockable.Class              (Mockable)
@@ -48,16 +48,21 @@ import           Node.Message.Binary         (BinaryP(..))
 import           Node
 
 spec :: Spec
-spec = describe "Node" $ do
+spec = describe "Node" $ modifyMaxSuccess (const 10) $ do
 
-    let mtu = 32
-    let tcpTransportOnePlace = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10342" simpleOnePlaceQDisc mtu
-    let tcpTransportFair = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10343" (fairQDisc (const (return Nothing))) mtu
+    -- Take at most 25000 bytes for each Received message.
+    -- We want to ensure that the MTU works, but not make the tests too
+    -- painfully slow.
+    let mtu = 25000
+    let tcpTransportUnbounded = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10342" simpleUnboundedQDisc mtu
+    let tcpTransportOnePlace = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10343" simpleOnePlaceQDisc mtu
+    let tcpTransportFair = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10345" (fairQDisc (const (return Nothing))) mtu
     let memoryTransport = runIO $ makeInMemoryTransport
     let transports = [
-              ("In-memory", memoryTransport)
-            , ("TCP", tcpTransportOnePlace)
+              ("TCP unbounded queueing", tcpTransportUnbounded)
+            , ("TCP one-place queueing", tcpTransportOnePlace)
             , ("TCP fair queueing", tcpTransportFair)
+            , ("In-memory", memoryTransport)
             ]
     let nodeEnv = defaultNodeEnvironment { nodeMtu = mtu }
 
@@ -178,12 +183,11 @@ spec = describe "Node" $ do
 
             -- one sender, one receiver
             describe "delivery" $ do
-                for_ [ConversationStyle] $ \talkStyle ->
-                    describe (show talkStyle) $ do
-                        prop "plain" $
-                            plainDeliveryTest transport_ talkStyle
-                        prop "heavy messages sent nicely" $
-                            withHeavyParcels $ plainDeliveryTest transport_ talkStyle
+                for_ [ConversationStyle] $ \talkStyle -> do
+                    prop "plain" $
+                        plainDeliveryTest transport_ nodeEnv talkStyle
+                    prop "heavy messages sent nicely" $
+                        withHeavyParcels $ plainDeliveryTest transport_ nodeEnv talkStyle
 
 prepareDeliveryTestState :: [Parcel] -> IO (TVar TestState)
 prepareDeliveryTestState expectedParcels =
@@ -192,10 +196,11 @@ prepareDeliveryTestState expectedParcels =
 
 plainDeliveryTest
     :: NT.Transport
+    -> NodeEnvironment Production
     -> TalkStyle
     -> NonEmptyList Parcel
     -> Property
-plainDeliveryTest transport_ talkStyle neparcels = ioProperty $ do
+plainDeliveryTest transport_ nodeEnv talkStyle neparcels = ioProperty $ do
     let parcels = getNonEmpty neparcels
     testState <- prepareDeliveryTestState parcels
 
@@ -205,7 +210,7 @@ plainDeliveryTest transport_ talkStyle neparcels = ioProperty $ do
         listener = receiveAll talkStyle $
             \parcel -> modifyTestState testState $ expected %= sans parcel
 
-    deliveryTest transport_ testState [worker] [listener]
+    deliveryTest transport_ nodeEnv testState [worker] [listener]
 
 withHeavyParcels :: (NonEmptyList Parcel -> Property) -> NonEmptyList HeavyParcel -> Property
 withHeavyParcels testCase (NonEmpty megaParcels) = testCase (NonEmpty (getHeavyParcel <$> megaParcels))
