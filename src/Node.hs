@@ -154,6 +154,9 @@ data ConversationActions body rcv m = ConversationActions {
 
        -- | Receive a message within the context of this conversation.
        --   'Nothing' means end of input (peer ended conversation).
+       --   The 'Word32' parameter is a limit on how many bytes will be read
+       --   in by this use of 'recv'. If the limit is exceeded, the
+       --   'LimitExceeded' exception is thrown.
      , recv :: Word32 -> m (Maybe rcv)
      }
 
