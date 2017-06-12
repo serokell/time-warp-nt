@@ -50,14 +50,16 @@ import           Node
 spec :: Spec
 spec = describe "Node" $ do
 
-    let tcpTransportOnePlace = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10342" simpleOnePlaceQDisc
-    let tcpTransportFair = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10343" (fairQDisc (const (return Nothing)))
+    let mtu = 32
+    let tcpTransportOnePlace = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10342" simpleOnePlaceQDisc mtu
+    let tcpTransportFair = runIO $ makeTCPTransport "0.0.0.0" "127.0.0.1" "10343" (fairQDisc (const (return Nothing))) mtu
     let memoryTransport = runIO $ makeInMemoryTransport
     let transports = [
               ("In-memory", memoryTransport)
             , ("TCP", tcpTransportOnePlace)
             , ("TCP fair queueing", tcpTransportFair)
             ]
+    let nodeEnv = defaultNodeEnvironment { nodeMtu = mtu }
 
     forM_ transports $ \(name, mkTransport) -> do
 
@@ -83,13 +85,13 @@ spec = describe "Node" $ do
                                 _ <- timeout "server sending response" 30000000 (send cactions (Parcel i (Payload 32)))
                                 return ()
 
-                let server = node (simpleNodeEndPoint transport) (const noReceiveDelay) serverGen BinaryP ("server" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
+                let server = node (simpleNodeEndPoint transport) (const noReceiveDelay) serverGen BinaryP ("server" :: String, 42 :: Int) nodeEnv $ \_node ->
                         NodeAction (const [listener]) $ \sendActions -> do
                             putSharedExclusive serverAddressVar (nodeId _node)
                             takeSharedExclusive clientFinished
                             putSharedExclusive serverFinished ()
 
-                let client = node (simpleNodeEndPoint transport) (const noReceiveDelay) clientGen BinaryP ("client" :: String, 24 :: Int) defaultNodeEnvironment $ \_node ->
+                let client = node (simpleNodeEndPoint transport) (const noReceiveDelay) clientGen BinaryP ("client" :: String, 24 :: Int) nodeEnv $ \_node ->
                         NodeAction (const [listener]) $ \sendActions -> do
                             serverAddress <- readSharedExclusive serverAddressVar
                             forM_ [1..attempts] $ \i -> withConnectionTo sendActions serverAddress $ \peerData -> Conversation $ \cactions -> do
@@ -128,7 +130,7 @@ spec = describe "Node" $ do
                                 _ <- send cactions (Parcel i (Payload 32))
                                 return ()
 
-                node (simpleNodeEndPoint transport) (const noReceiveDelay) gen BinaryP ("some string" :: String, 42 :: Int) defaultNodeEnvironment $ \_node ->
+                node (simpleNodeEndPoint transport) (const noReceiveDelay) gen BinaryP ("some string" :: String, 42 :: Int) nodeEnv $ \_node ->
                     NodeAction (const [listener]) $ \sendActions -> do
                         forM_ [1..attempts] $ \i -> withConnectionTo sendActions (nodeId _node) $ \peerData -> Conversation $ \cactions -> do
                             True <- return $ peerData == ("some string", 42)
@@ -143,7 +145,7 @@ spec = describe "Node" $ do
 
             prop "ack timeout" $ ioProperty . runProduction $ do
                 gen <- liftIO newStdGen
-                let env = defaultNodeEnvironment {
+                let env = nodeEnv {
                           -- 1/10 second.
                           nodeAckTimeout = 100000
                         }

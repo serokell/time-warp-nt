@@ -51,6 +51,7 @@ import qualified Data.ByteString             as LBS
 import qualified Data.List                   as L
 import qualified Data.Set                    as S
 import           Data.Time.Units             (Microsecond, Millisecond, Second, TimeUnit)
+import           Data.Word                   (Word32)
 import           GHC.Generics                (Generic)
 import           Mockable.Class              (Mockable)
 import           Mockable.Concurrent         (delay, forConcurrently, fork, cancel,
@@ -272,12 +273,14 @@ makeTCPTransport
     -> String
     -> String
     -> (forall t . IO (TCP.QDisc t))
+    -> Word32
     -> IO NT.Transport
-makeTCPTransport bind hostAddr port qdisc = do
+makeTCPTransport bind hostAddr port qdisc mtu = do
     let tcpParams = TCP.defaultTCPParameters {
               TCP.tcpReuseServerAddr = True
             , TCP.tcpReuseClientAddr = True
             , TCP.tcpNewQDisc = qdisc
+            , TCP.tcpMaxReceiveLength = mtu
             }
     choice <- TCP.createTransport (TCP.Addressable (TCP.TCPAddrInfo bind port ((,) hostAddr))) tcpParams
     case choice of

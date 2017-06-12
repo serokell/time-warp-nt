@@ -164,13 +164,18 @@ makeSomeHandler promise = do
     return $ SomeHandler tid promise
 
 data NodeEnvironment (m :: * -> *) = NodeEnvironment {
-      nodeAckTimeout :: Microsecond
+      nodeAckTimeout :: !Microsecond
+      -- | Maximum transmission unit: how many bytes can be sent in a single
+      --   network-transport send. Tune this according to the transport
+      --   which backs the time-warp node.
+    , nodeMtu        :: !Word32
     }
 
 defaultNodeEnvironment :: NodeEnvironment m
 defaultNodeEnvironment = NodeEnvironment {
       -- 30 second timeout waiting for an ACK.
       nodeAckTimeout = 30000000
+    , nodeMtu        = maxBound
     }
 
 -- | Computation in m of a delay (or no delay).

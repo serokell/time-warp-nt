@@ -91,13 +91,6 @@ data Node m = Node {
 nodeEndPointAddress :: Node m -> NT.EndPointAddress
 nodeEndPointAddress (Node addr _ _) = LL.nodeEndPointAddress addr
 
--- | Maximum transmission unit: you can't send more than this many bytes in
---   one call. It's assumed to be lower than the network-transport 
---
---   TODO make it configurable.
-mtu :: Word32
-mtu = 4096
-
 data Input t = Input t | End
 
 data LimitExceeded = LimitExceeded
@@ -214,6 +207,8 @@ nodeSendActions nodeUnit packing =
     SendActions nodeWithConnectionTo
   where
 
+    mtu = LL.nodeMtu (LL.nodeEnvironment nodeUnit)
+
     nodeWithConnectionTo
         :: forall t .
            LL.NodeId
@@ -242,9 +237,11 @@ nodeConversationActions
     -> ChannelIn m
     -> ChannelOut m
     -> ConversationActions snd rcv m
-nodeConversationActions _ _ packing inchan outchan =
+nodeConversationActions node _ packing inchan outchan =
     ConversationActions nodeSend nodeRecv
     where
+
+    mtu = LL.nodeMtu (LL.nodeEnvironment node)
 
     nodeSend = \body -> do
         LL.writeMany mtu outchan (packMsg packing body)
