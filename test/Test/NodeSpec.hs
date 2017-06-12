@@ -44,7 +44,7 @@ import           Mockable.SharedExclusive    (newSharedExclusive, readSharedExcl
 import           Mockable.Concurrent         (withAsync, wait, Async, Delay, delay)
 import           Mockable.Exception          (catch, throw)
 import           Mockable.Production         (Production, runProduction)
-import           Node.Message                (BinaryP(..))
+import           Node.Message.Binary         (BinaryP(..))
 import           Node
 
 spec :: Spec
@@ -76,7 +76,7 @@ spec = describe "Node" $ do
 
                 let listener = ListenerActionConversation $ \pd _ cactions -> do
                         True <- return $ pd == ("client", 24)
-                        initial <- timeout "server waiting for request" 30000000 (recv cactions)
+                        initial <- timeout "server waiting for request" 30000000 (recv cactions maxBound)
                         case initial of
                             Nothing -> error "got no initial message"
                             Just (Parcel i (Payload _)) -> do
@@ -95,7 +95,7 @@ spec = describe "Node" $ do
                             forM_ [1..attempts] $ \i -> withConnectionTo sendActions serverAddress $ \peerData -> Conversation $ \cactions -> do
                                 True <- return $ peerData == ("server", 42)
                                 _ <- timeout "client sending" 30000000 (send cactions (Parcel i (Payload 32)))
-                                response <- timeout "client waiting for response" 30000000 (recv cactions)
+                                response <- timeout "client waiting for response" 30000000 (recv cactions maxBound)
                                 case response of
                                     Nothing -> error "got no response"
                                     Just (Parcel j (Payload _)) -> do
@@ -121,7 +121,7 @@ spec = describe "Node" $ do
 
                 let listener = ListenerActionConversation $ \pd _ cactions -> do
                         True <- return $ pd == ("some string", 42)
-                        initial <- recv cactions
+                        initial <- recv cactions maxBound
                         case initial of
                             Nothing -> error "got no initial message"
                             Just (Parcel i (Payload _)) -> do
@@ -133,7 +133,7 @@ spec = describe "Node" $ do
                         forM_ [1..attempts] $ \i -> withConnectionTo sendActions (nodeId _node) $ \peerData -> Conversation $ \cactions -> do
                             True <- return $ peerData == ("some string", 42)
                             _ <- send cactions (Parcel i (Payload 32))
-                            response <- recv cactions
+                            response <- recv cactions maxBound
                             case response of
                                 Nothing -> error "got no response"
                                 Just (Parcel j (Payload _)) -> do
@@ -166,7 +166,7 @@ spec = describe "Node" $ do
                         NodeAction (const []) $ \sendActions -> do
                             timeout "client waiting for ACK" 5000000 $
                                 flip catch handleThreadKilled $ withConnectionTo sendActions peerAddr $ \peerData -> Conversation $ \cactions -> do
-                                    _ :: Maybe Parcel <- recv cactions
+                                    _ :: Maybe Parcel <- recv cactions maxBound
                                     send cactions (Parcel 0 (Payload 32))
                                     return ()
                     --liftIO . putStrLn $ "Closing end point"

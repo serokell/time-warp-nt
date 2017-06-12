@@ -80,7 +80,7 @@ import           Node                        (ConversationActions (..), Listener
                                               Worker, node, nodeId, defaultNodeEnvironment,
                                               simpleNodeEndPoint, Conversation (..),
                                               noReceiveDelay)
-import           Node.Message                (BinaryP (..))
+import           Node.Message.Binary         (BinaryP (..))
 
 -- | Run a computation, but kill it if it takes more than a given number of
 --   Microseconds to complete. If that happens, log using a given string
@@ -236,7 +236,7 @@ sendAll ConversationStyle sendActions peerId msgs =
             Conversation $ \cactions -> forM_ msgs $
                 \msg -> do
                     send cactions msg
-                    (_ :: Maybe Bool) <- recv cactions
+                    (_ :: Maybe Bool) <- recv cactions maxBound
                     pure ()
 
 receiveAll
@@ -255,7 +255,7 @@ receiveAll
 -- sender doesn't finish before the conversation SYN/ACK completes.
 receiveAll ConversationStyle  handler =
     ListenerActionConversation @_ @_ @_ @Bool $ \_ _ cactions ->
-        let loop = do mmsg <- recv cactions
+        let loop = do mmsg <- recv cactions maxBound
                       case mmsg of
                           Nothing -> pure ()
                           Just msg -> do
