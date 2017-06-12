@@ -44,11 +44,17 @@ Library
 
                         Bench.Network.Commons
 
+                        JsonLog
+                        JsonLog.CanJsonLog
+                        JsonLog.Event
+                        JsonLog.JsonLogT
+
   other-modules:        NTP.Packet
                         NTP.Util
                         Data.NonEmptySet
 
-  build-depends:        async
+  build-depends:        aeson 
+                      , async
                       , attoparsec
                       , base
                       , containers
@@ -56,6 +62,7 @@ Library
                       , bytestring
                       , deepseq
                       , data-default
+                      , ether
                       , exceptions
                       , formatting
                       , hashable
@@ -70,6 +77,8 @@ Library
                       , network-transport-tcp
                       , mtl >= 2.2.1
                       , random
+                      , resourcet
+                      , transformers-lift
                       , universum
                       , serokell-util
                       , stm
