@@ -239,14 +239,18 @@ closeChannel (ChannelOut conn) = NT.close conn
 
 -- | Do multiple sends on a 'ChannelOut'.
 writeMany
-    :: ( Monad m, Mockable Throw m )
+    :: forall m .
+       ( Monad m, Mockable Throw m )
     => Word32 -- ^ Split into chunks of at most this size in bytes. 0 means no split.
     -> ChannelOut m
     -> LBS.ByteString
     -> m ()
-writeMany mtu (ChannelOut conn) bss =
-    NT.send conn (chop bss >>= LBS.toChunks) >>= either throw pure
+writeMany mtu (ChannelOut conn) bss = mapM_ sendUnit units
   where
+    sendUnit :: [BS.ByteString] -> m ()
+    sendUnit unit = NT.send conn unit >>= either throw pure
+    units :: [[BS.ByteString]]
+    units = fmap LBS.toChunks (chop bss)
     chop :: LBS.ByteString -> [LBS.ByteString]
     chop | mtu == 0 = pure
          | otherwise =
