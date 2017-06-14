@@ -9,7 +9,7 @@ module Network.Broadcast.Relay.Class
        ) where
 
 import           Node                          (NodeId)
-import qualified Node.Message                  as Msg
+import qualified Node.Message.Class            as Msg
 import           Universum
 
 import           Network.Broadcast.Relay.Types (ReqMsg, InvOrData, DataMsg,

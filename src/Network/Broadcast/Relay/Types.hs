@@ -20,7 +20,7 @@ import           Formatting                    (bprint, shown, build, (%))
 import           Universum
 
 import           Node                          (NodeId)
-import qualified Node.Message                  as Msg
+import qualified Node.Message.Class            as Msg
 
 data RelayError = UnexpectedInv
                 | UnexpectedData

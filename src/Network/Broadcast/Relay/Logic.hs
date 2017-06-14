@@ -26,7 +26,7 @@ import           Node                               (Listener, ListenerAction (.
                                                      SendActions (..), Conversation (..),
                                                      ConversationActions (..),
                                                      NodeId)
-import qualified Node.Message                       as Msg
+import qualified Node.Message.Class                 as Msg
 import           Network.Broadcast.Relay.Types
 import           Network.Broadcast.Relay.Class
 import           Network.Broadcast.Relay.Util
@@ -57,7 +57,7 @@ import           Network.Broadcast.Relay.Util
 listenersForRelay
     :: forall packingType peerData m .
        ( Msg.Message Void
-       , Msg.Packable packingType Void
+       , Msg.Serializable packingType Void
        , WithLogger m
        , Mockable Throw m
        )
@@ -73,7 +73,7 @@ listenersForRelay (Data mP DataParams{..}) =
 relayListeners
     :: forall packingType peerData m .
        ( Msg.Message Void
-       , Msg.Packable packingType Void
+       , Msg.Serializable packingType Void
        , WithLogger m
        , Mockable Throw m
        )
@@ -151,7 +151,8 @@ simpleRelayer getTargets = do
     invReqDataConversation key conts conv = do
         send conv $ Left $ InvMsg key
         let whileNotK = do
-              rm <- recv conv
+              -- TODO discover the bound using some monadic computation.
+              rm <- recv conv maxBound
               whenJust rm $ \ReqMsg{..} -> do
                 if rmKey == key
                    then send conv $ Right $ DataMsg conts
@@ -178,7 +179,7 @@ handleReqL
     -> Listener packingType peerData m
 handleReqL handleReq = ListenerActionConversation $ \_ peer cactions ->
    let handlingLoop = do
-           mbMsg <- recv cactions
+           mbMsg <- recv cactions maxBound
            whenJust mbMsg $ \ReqMsg{..} -> do
                dtMB <- handleReq peer rmKey
                case dtMB of
@@ -219,7 +220,7 @@ handleInvL propagateData InvReqDataParams{..} = ListenerActionConversation $ \_ 
             -- Expect an 'InvMsg'.
             -- Actually, this is 'InvOrData', and we give an error in case
             -- 'DataMsg' is observed first (expectInv).
-            inv' <- recv cactions
+            inv' <- recv cactions maxBound
             whenJust inv' $ expectInv $ \InvMsg{..} -> do
                 -- 'handleInv' comes from the 'InvReqDataParams' record.
                 -- Note that 'handleInvDo' returns a new key 'useful'
@@ -230,7 +231,7 @@ handleInvL propagateData InvReqDataParams{..} = ListenerActionConversation $ \_ 
                     -- the data.
                     send cactions $ ReqMsg ne
                     -- Now the pattern repeats but we expect a 'DataMsg'.
-                    dt' <- recv cactions
+                    dt' <- recv cactions maxBound
                     whenJust dt' $ expectData $ \DataMsg{..} -> do
                           handleDataDo peer propagateData contentsToKey (handleData peer) dmContents
                           -- handlingLoop
@@ -248,7 +249,7 @@ handleInvL propagateData InvReqDataParams{..} = ListenerActionConversation $ \_ 
 handleDataL
     :: forall packingType peerData value m .
        ( Msg.Serializable packingType (DataMsg value)
-       , Msg.Packable packingType Void
+       , Msg.Serializable packingType Void
        , Msg.Message Void
        , Msg.Message (DataMsg value)
        , Buildable value
@@ -259,7 +260,7 @@ handleDataL
     -> Listener packingType peerData m
 handleDataL propagateData handleData = ListenerActionConversation $ \_ peer (cactions :: ConversationActions Void (DataMsg value) m) ->
     let handlingLoop = do
-            mbMsg <- recv cactions
+            mbMsg <- recv cactions maxBound
             whenJust mbMsg $ \DataMsg{..} -> do
                 ifM (handleData peer dmContents)
                     (propagateData $ constructDataOnlyPM peer dmContents)
