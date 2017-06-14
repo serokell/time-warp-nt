@@ -1,5 +1,5 @@
 name:                node-sketch
-version:             0.1.2.0
+version:             0.1.2.1
 license:             MIT
 license-file:        LICENSE
 category:            Network
@@ -35,7 +35,10 @@ Library
                         Mockable.Metrics
 
                         Node.Internal
-                        Node.Message
+                        Node.Message.Decoder
+                        Node.Message.Class
+                        Node.Message.Binary
+                        Node.Message.Store
 
                         Node.Util.Monitor
 
@@ -68,6 +71,7 @@ Library
                       , hashable
                       , kademlia
                       , lens
+                      , lifted-base
                       , log-warper
                       , mmorph
                       , monad-control
@@ -94,6 +98,7 @@ Library
                       , ekg
                       , mwc-random
                       , statistics
+                      , store
                       , vector
 
   hs-source-dirs:       src
@@ -134,6 +139,7 @@ executable ping-pong
                      , node-sketch
                      , random
                      , stm
+                     , store
                      , time-units
 
   hs-source-dirs:      examples
