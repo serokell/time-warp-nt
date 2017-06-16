@@ -10,7 +10,7 @@ module Network.Broadcast.Relay.Class
 
 import           Node                          (NodeId)
 import qualified Node.Message.Class            as Msg
-import           Universum
+-- import           Universum
 
 import           Network.Broadcast.Relay.Types (ReqMsg, InvOrData, DataMsg,
                                                 PropagationMsg)
@@ -19,13 +19,14 @@ import           Network.Broadcast.Relay.Types (ReqMsg, InvOrData, DataMsg,
 
 data Relay packingType m where
   InvReqData ::
-      ( Buildable contents
-      , Buildable key
-      , Typeable contents
-      , Typeable key
-      , Eq key
+      ( --Buildable contents
+      --, Buildable key
+      --, Typeable contents
+      --, Typeable key
+        Eq key
       , Msg.Serializable packingType (ReqMsg key)
       , Msg.Serializable packingType (InvOrData key contents)
+      -- TBD why do we need Message instances?
       , Msg.Message (ReqMsg key)
       , Msg.Message (InvOrData key contents)
       )
@@ -33,9 +34,9 @@ data Relay packingType m where
       -> InvReqDataParams key contents m
       -> Relay packingType m
   Data ::
-      ( Buildable contents
-      , Typeable contents
-      , Msg.Serializable packingType (DataMsg contents)
+      ( --Buildable contents
+      --, Typeable contents
+        Msg.Serializable packingType (DataMsg contents)
       , Msg.Message (DataMsg contents)
       )
       => (PropagationMsg packingType -> m ()) -- How to relay the data.

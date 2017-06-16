@@ -16,8 +16,6 @@ module Network.Broadcast.Relay.Logic
     ) where
 
 import           Universum
-import           Formatting                         (build, sformat, (%))
-import           System.Wlog                        (WithLogger, logDebug, logWarning)
 
 import           Mockable                           (Mockable, Throw)
 import qualified Mockable.Concurrent                as Concurrent
@@ -56,9 +54,7 @@ import           Network.Broadcast.Relay.Util
 --   this particular relay description.
 listenersForRelay
     :: forall packingType peerData m .
-       ( Msg.Message Void
-       , Msg.Serializable packingType Void
-       , WithLogger m
+       ( Msg.Serializable packingType Void
        , Mockable Throw m
        )
     => Relay packingType m
@@ -72,9 +68,7 @@ listenersForRelay (Data mP DataParams{..}) =
 --   listeners in your node and it will carry out a relay broadcast.
 relayListeners
     :: forall packingType peerData m .
-       ( Msg.Message Void
-       , Msg.Serializable packingType Void
-       , WithLogger m
+       ( Msg.Serializable packingType Void
        , Mockable Throw m
        )
     => [Relay packingType m]
@@ -98,7 +92,6 @@ simpleRelayer
        ( Msg.Serializable packingType Void
        , Mockable Channel.Channel m
        , Mockable Concurrent.Concurrently m
-       , WithLogger m
        )
     => (Maybe NodeId -> m (Set NodeId))
     -> m (PropagationMsg packingType -> m (), SendActions packingType peerData m -> m ())
@@ -120,15 +113,18 @@ simpleRelayer getTargets = do
 
     -- Propagate one message to a set of peers.
     -- It does so concurrently, one thread for each peer, and will not finish
-    -- until all have finished.
+    -- until all have finished (the entire conversation: Inv/Req/Data).
+    --
+    -- This is far from ideal! One slow peer can choke the entire queue.
+    -- A better design? One queue for each peer, probably.
     propagateOne :: SendActions packingType peerData m -> PropagationMsg packingType -> m ()
     propagateOne sactions (InvReqDataPM mPeer key value) = do
-        logDebug $ sformat ("Propagation data with key: "%build) key
+        --logDebug $ sformat ("Propagation data with key: "%build) key
         targets <- getTargets mPeer
         void $ Concurrent.forConcurrently (toList targets) $ \peer ->
             withConnectionTo sactions peer $ \_ -> Conversation (invReqDataConversation key value)
     propagateOne sactions (DataOnlyPM mPeer value) = do
-        logDebug $ sformat ("Propagation data: "%build) value
+        --logDebug $ sformat ("Propagation data: "%build) value
         targets <- getTargets mPeer
         void $ Concurrent.forConcurrently (toList targets) $ \peer ->
             withConnectionTo sactions peer $ \_ -> Conversation (dataConversation value)
@@ -170,10 +166,9 @@ handleReqL
     :: forall packingType peerData key value m .
        ( Msg.Serializable packingType (ReqMsg key)
        , Msg.Serializable packingType (InvOrData key value)
-       , Msg.Message (InvOrData key value)
+       -- , Msg.Message (InvOrData key value)
        , Msg.Message (ReqMsg key)
-       , Buildable key
-       , WithLogger m
+       , Monad m
        )
     => (NodeId -> key -> m (Maybe value))
     -> Listener packingType peerData m
@@ -183,19 +178,23 @@ handleReqL handleReq = ListenerActionConversation $ \_ peer cactions ->
            whenJust mbMsg $ \ReqMsg{..} -> do
                dtMB <- handleReq peer rmKey
                case dtMB of
-                   Nothing -> logNoData rmKey
-                   Just dt -> logHaveData rmKey >> send cactions (constructDataMsg dt)
+                   Nothing -> pure ()
+                   Just dt -> send cactions (constructDataMsg dt)
                handlingLoop
     in handlingLoop
   where
     constructDataMsg :: value -> InvOrData key value
     constructDataMsg = Right . DataMsg
+    -- This can be done as part of handleReq.
+    -- Removed here so that the Buildable and WithLogger constraint goes away.
+    {-
     logNoData rmKey = logDebug $ sformat
         ("We don't have data for key "%build)
         rmKey
     logHaveData rmKey= logDebug $ sformat
         ("We have data for key "%build)
         rmKey
+    -}
 
 -- | A listener for 'InvMsg'. In fact, it expects 'InvOrData' because it may
 --   send a 'ReqMsg' after the initial 'InvMsg', after which it will expect
@@ -206,10 +205,7 @@ handleInvL
      , Msg.Message (InvOrData key value)
      , Msg.Serializable packingType (ReqMsg key)
      , Msg.Serializable packingType (InvOrData key value)
-     , Buildable key
-     , Buildable value
      , Eq key
-     , WithLogger m
      , Mockable Throw m
      )
   => (PropagationMsg packingType -> m ()) -- ^ How to relay the data.
@@ -250,10 +246,8 @@ handleDataL
     :: forall packingType peerData value m .
        ( Msg.Serializable packingType (DataMsg value)
        , Msg.Serializable packingType Void
-       , Msg.Message Void
        , Msg.Message (DataMsg value)
-       , Buildable value
-       , WithLogger m
+       , Monad m
        )
     => (PropagationMsg packingType -> m ()) -- ^ How to relay the data.
     -> (NodeId -> value -> m Bool) -- ^ Give 'True' to propagate, 'False' otherwise.
@@ -264,26 +258,29 @@ handleDataL propagateData handleData = ListenerActionConversation $ \_ peer (cac
             whenJust mbMsg $ \DataMsg{..} -> do
                 ifM (handleData peer dmContents)
                     (propagateData $ constructDataOnlyPM peer dmContents)
-                    (logUseless dmContents)
+                    (pure ())
                 handlingLoop
     in handlingLoop
   where
     constructDataOnlyPM :: NodeId -> value -> PropagationMsg packingType
     constructDataOnlyPM = DataOnlyPM . Just
+    -- This can be done in handleData
+    -- Eliminating it here gets rid of the Buildable and WithLogger
+    -- constraints.
+    {-
     logUseless dmContents = logWarning $ sformat
         ("Ignoring data "%build) dmContents
+    -}
 
 -- | Given a value, determine its key and whether it should propagate.
 handleDataDo
     :: forall packingType key value m .
-       ( Buildable key
-       , Eq key
-       , Buildable value
+       ( Eq key
        , Msg.Message (InvOrData key value)
        , Msg.Message (ReqMsg key)
        , Msg.Serializable packingType (InvOrData key value)
        , Msg.Serializable packingType (ReqMsg key)
-       , WithLogger m
+       , Monad m
        )
     => NodeId -- ^ The peer which gave the data.
     -> (PropagationMsg packingType -> m ())
@@ -297,27 +294,31 @@ handleDataDo peer propagateData contentsToKey handleData dmContents = do
     -- other than logging).
     dmKey <- contentsToKey dmContents
     ifM (handleData dmContents)
-        (propagateData $ InvReqDataPM (Just peer) dmKey dmContents) $
+        (propagateData $ InvReqDataPM (Just peer) dmKey dmContents) $ pure ()
+          {-
             logDebug $ sformat
                 ("Ignoring data "%build%" for key "%build) dmContents dmKey
+          -}
 
 -- | Determine whether a key is useful and do some logging.
 handleInvDo
     :: forall key m .
-       ( Buildable key
-       , WithLogger m
-       )
+       ( Monad m )
     => (key -> m Bool)
     -> key
     -> m (Maybe key)
 handleInvDo decide imKey =
     ifM (decide imKey)
-        (Just imKey <$ logUseful)
-        (Nothing <$ logUseless)
+        (pure $ Just imKey)
+        (pure $ Nothing)
   where
+    -- Do these in 'decide', rather than having the Buildable and WithLogger
+    -- constraints here.
+    {-
     logUseless = logDebug $ sformat
         ("Ignoring inv for key "%build%", because it's useless")
         imKey
     logUseful = logDebug $ sformat
         ("We'll request data for key "%build%", because it's useful")
         imKey
+    -}
