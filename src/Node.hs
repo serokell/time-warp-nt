@@ -36,8 +36,8 @@ module Node (
     , Message (..)
     , messageName'
 
-    , Conversation(..)
-    , SendActions(withConnectionTo)
+    , Conversation (..)
+    , SendActions (..)
     , ConversationActions(send, recv)
     , Worker
     , Listener
