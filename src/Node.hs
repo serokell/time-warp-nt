@@ -29,6 +29,7 @@ module Node (
 
     , LL.NodeEndPoint(..)
     , simpleNodeEndPoint
+    , manualNodeEndPoint
 
     , LL.NodeState(..)
 
@@ -263,6 +264,16 @@ simpleNodeEndPoint
     -> LL.NodeEndPoint m
 simpleNodeEndPoint transport _ = LL.NodeEndPoint {
       newNodeEndPoint = NT.newEndPoint transport
+    , closeNodeEndPoint = NT.closeEndPoint
+    }
+
+manualNodeEndPoint
+    :: ( Applicative m )
+    => NT.EndPoint m
+    -> m (LL.Statistics m)
+    -> LL.NodeEndPoint m
+manualNodeEndPoint ep _ = LL.NodeEndPoint {
+      newNodeEndPoint = pure $ Right ep
     , closeNodeEndPoint = NT.closeEndPoint
     }
 
