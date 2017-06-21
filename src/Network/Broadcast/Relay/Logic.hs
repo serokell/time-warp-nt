@@ -159,9 +159,10 @@ simpleRelayer getTargets = do
 --   within some monad. It will send back a `DataMsg` with the value if it is
 --   found.
 --
---   TBD why do we need this 'ReqMsg' listener? This seems to have nothing
---   to do with relaying. It's an unsolicited query for some key/value pair,
---   which induces no further relaying. Seems unrelated to relay/broadcast.
+--   This listener is included because this inv/req/data relay system is not
+--   only a broadcast mechanism, it's also a kind of key/value store. If you
+--   know you want some data, you can just ReqMsg it and the peer will give it
+--   to you if they have it.
 handleReqL
     :: forall packingType peerData key value m .
        ( Msg.Serializable packingType (ReqMsg key)
