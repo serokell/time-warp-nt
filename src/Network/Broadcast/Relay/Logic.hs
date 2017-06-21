@@ -13,6 +13,13 @@ module Network.Broadcast.Relay.Logic
     , handleInvL
     , handleReqL
     , handleDataL
+
+      -- Manually initiate a broadcast, bypassing the queue.
+    , propagateOne
+    , invReqDataConversation
+    , invReqDataConversation_
+    , dataConversation
+    , dataConversation_
     ) where
 
 import           Universum
@@ -104,56 +111,85 @@ simpleRelayer getTargets = do
     let clearQueue :: SendActions packingType peerData m -> m ()
         clearQueue sactions = do
             msg <- Channel.readChannel queue
-            propagateOne sactions msg
+            getTargets (propagationMsgProvenance msg) >>= propagateOne sactions msg
             clearQueue sactions
 
     return (fillQueue, clearQueue)
 
-  where
+-- | Propagate one message to a set of peers.
+--   It does so concurrently, one thread for each peer, and will not finish
+--   until all have finished (the entire conversation: Inv/Req/Data).
+--
+--   This is far from ideal! One slow peer can choke the entire queue.
+--   A better design? One queue for each peer, probably.
+propagateOne
+    :: forall packingType peerData m .
+       ( Msg.Serializable packingType Void
+       , Mockable Concurrent.Concurrently m
+       )
+    => SendActions packingType peerData m
+    -> PropagationMsg packingType
+    -> Set NodeId
+    -> m ()
+propagateOne sactions (InvReqDataPM _ key value) targets =
+    --logDebug $ sformat ("Propagation data with key: "%build) key
+    void $ Concurrent.forConcurrently (toList targets) $ \peer ->
+        withConnectionTo sactions peer $ \_ -> invReqDataConversation key value
+propagateOne sactions (DataOnlyPM _ value) targets = do
+    --logDebug $ sformat ("Propagation data: "%build) value
+    void $ Concurrent.forConcurrently (toList targets) $ \peer ->
+        withConnectionTo sactions peer $ \_ -> dataConversation value
 
-    -- Propagate one message to a set of peers.
-    -- It does so concurrently, one thread for each peer, and will not finish
-    -- until all have finished (the entire conversation: Inv/Req/Data).
-    --
-    -- This is far from ideal! One slow peer can choke the entire queue.
-    -- A better design? One queue for each peer, probably.
-    propagateOne :: SendActions packingType peerData m -> PropagationMsg packingType -> m ()
-    propagateOne sactions (InvReqDataPM mPeer key value) = do
-        --logDebug $ sformat ("Propagation data with key: "%build) key
-        targets <- getTargets mPeer
-        void $ Concurrent.forConcurrently (toList targets) $ \peer ->
-            withConnectionTo sactions peer $ \_ -> Conversation (invReqDataConversation key value)
-    propagateOne sactions (DataOnlyPM mPeer value) = do
-        --logDebug $ sformat ("Propagation data: "%build) value
-        targets <- getTargets mPeer
-        void $ Concurrent.forConcurrently (toList targets) $ \peer ->
-            withConnectionTo sactions peer $ \_ -> Conversation (dataConversation value)
+dataConversation
+    :: forall packingType value m .
+       ( Msg.Serializable packingType (DataMsg value)
+       , Msg.Serializable packingType Void
+       , Msg.Message (DataMsg value)
+       )
+    => value
+    -> Conversation packingType m ()
+dataConversation value = Conversation $ dataConversation_ value
 
+dataConversation_
+    :: forall value m .
+       ( )
+    => value
+    -> ConversationActions (DataMsg value) Void m
+    -> m ()
+dataConversation_ value conv = send conv $ DataMsg value
 
-    dataConversation
-        :: forall value .
-           value
-        -> ConversationActions (DataMsg value) Void m
-        -> m ()
-    dataConversation value conv = send conv $ DataMsg value
+invReqDataConversation
+    :: forall packingType key value m .
+       ( Monad m
+       , Eq key
+       , Msg.Serializable packingType (InvOrData key value)
+       , Msg.Serializable packingType (ReqMsg key)
+       , Msg.Message (InvOrData key value)
+       )
+    => key
+    -> value
+    -> Conversation packingType m ()
+invReqDataConversation key val = Conversation $ invReqDataConversation_ key val
 
-    invReqDataConversation
-        :: forall key value .
-           ( Eq key )
-        => key
-        -> value
-        -> ConversationActions (InvOrData key value) (ReqMsg key) m
-        -> m ()
-    invReqDataConversation key conts conv = do
-        send conv $ Left $ InvMsg key
-        let whileNotK = do
-              -- TODO discover the bound using some monadic computation.
-              rm <- recv conv maxBound
-              whenJust rm $ \ReqMsg{..} -> do
-                if rmKey == key
-                   then send conv $ Right $ DataMsg conts
-                   else whileNotK
-        whileNotK
+invReqDataConversation_
+    :: forall key value m .
+       ( Monad m
+       , Eq key
+       )
+    => key
+    -> value
+    -> ConversationActions (InvOrData key value) (ReqMsg key) m
+    -> m ()
+invReqDataConversation_ key conts conv = do
+    send conv $ Left $ InvMsg key
+    let whileNotK = do
+          -- TODO discover the bound using some monadic computation.
+          rm <- recv conv maxBound
+          whenJust rm $ \ReqMsg{..} -> do
+            if rmKey == key
+               then send conv $ Right $ DataMsg conts
+               else whileNotK
+    whileNotK
 
 -- | A listener for 'ReqMsg', given a way to produce a value from a key
 --   within some monad. It will send back a `DataMsg` with the value if it is

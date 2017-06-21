@@ -71,7 +71,6 @@ Library
                       , bytestring
                       , deepseq
                       , data-default
-                      , ether
                       , exceptions
                       , formatting
                       , hashable
