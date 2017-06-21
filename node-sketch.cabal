@@ -19,6 +19,7 @@ Library
                         Network.Transport.Concrete.TCP
                         Network.QDisc.Fair
 
+                        Network.Broadcast.Relay
                         Network.Broadcast.Relay.Types
                         Network.Broadcast.Relay.Class
                         Network.Broadcast.Relay.Util
