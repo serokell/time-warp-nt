@@ -27,7 +27,7 @@ import           Universum
 import           Mockable                           (Mockable, Throw)
 import qualified Mockable.Concurrent                as Concurrent
 import qualified Mockable.Channel                   as Channel
-import           Node                               (Listener, ListenerAction (..),
+import           Node                               (Listener (..),
                                                      SendActions (..), Conversation (..),
                                                      ConversationActions (..),
                                                      NodeId)
@@ -209,7 +209,7 @@ handleReqL
        )
     => (NodeId -> key -> m (Maybe value))
     -> Listener packingType peerData m
-handleReqL handleReq = ListenerActionConversation $ \_ peer cactions ->
+handleReqL handleReq = Listener $ \_ peer cactions ->
    let handlingLoop = do
            mbMsg <- recv cactions maxBound
            whenJust mbMsg $ \ReqMsg{..} -> do
@@ -248,7 +248,7 @@ handleInvL
   => (PropagationMsg packingType -> m ()) -- ^ How to relay the data.
   -> InvReqDataParams key value m
   -> Listener packingType peerData m
-handleInvL propagateData InvReqDataParams{..} = ListenerActionConversation $ \_ peer cactions ->
+handleInvL propagateData InvReqDataParams{..} = Listener $ \_ peer cactions ->
     let handlingLoop = do
             -- Expect an 'InvMsg'.
             -- Actually, this is 'InvOrData', and we give an error in case
@@ -289,7 +289,7 @@ handleDataL
     => (PropagationMsg packingType -> m ()) -- ^ How to relay the data.
     -> (NodeId -> value -> m Bool) -- ^ Give 'True' to propagate, 'False' otherwise.
     -> Listener packingType peerData m
-handleDataL propagateData handleData = ListenerActionConversation $ \_ peer (cactions :: ConversationActions Void (DataMsg value) m) ->
+handleDataL propagateData handleData = Listener $ \_ peer (cactions :: ConversationActions Void (DataMsg value) m) ->
     let handlingLoop = do
             mbMsg <- recv cactions maxBound
             whenJust mbMsg $ \DataMsg{..} -> do

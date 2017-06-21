@@ -41,8 +41,8 @@ module Node (
     , SendActions(withConnectionTo)
     , ConversationActions(send, recv)
     , Worker
-    , Listener
-    , ListenerAction(..)
+    , Listener (..)
+    , ListenerAction
 
     , hoistListenerAction
     , hoistSendActions
@@ -106,27 +106,29 @@ instance Exception NoParse
 
 type Worker packing peerData m = SendActions packing peerData m -> m ()
 
--- TODO: rename all `ListenerAction` -> `Listener`?
-type Listener = ListenerAction
+-- | A ListenerAction with existential snd and rcv types and suitable
+--   constraints on them.
+data Listener packingType peerData m where
+  Listener
+    :: ( Serializable packingType snd, Serializable packingType rcv, Message rcv )
+    => ListenerAction packingType peerData snd rcv m
+    -> Listener packingType peerData m
 
-data ListenerAction packing peerData m where
-  -- | A listener that handles an incoming bi-directional conversation.
-  ListenerActionConversation
-    :: ( Serializable packing snd, Serializable packing rcv, Message rcv )
-    => (peerData -> LL.NodeId -> ConversationActions snd rcv m -> m ())
-    -> ListenerAction packing peerData m
+-- | A listener that handles an incoming bi-directional conversation.
+type ListenerAction packing peerData snd rcv m =
+    peerData -> LL.NodeId -> ConversationActions snd rcv m -> m ()
 
 hoistListenerAction
     :: (forall a. n a -> m a)
     -> (forall a. m a -> n a)
-    -> ListenerAction packing peerData n
-    -> ListenerAction packing peerData m
-hoistListenerAction nat rnat (ListenerActionConversation f) = ListenerActionConversation $
+    -> ListenerAction packing peerData snd rcv n
+    -> ListenerAction packing peerData snd rcv m
+hoistListenerAction nat rnat f =
     \peerData nId convActions -> nat $ f peerData nId (hoistConversationActions rnat convActions)
 
 -- | Gets message type basing on type of incoming messages
 listenerMessageName :: Listener packing peerData m -> MessageName
-listenerMessageName (ListenerActionConversation (
+listenerMessageName (Listener (
         _ :: peerData -> LL.NodeId -> ConversationActions snd rcv m -> m ()
     )) = messageName (Proxy :: Proxy rcv)
 
@@ -178,7 +180,7 @@ hoistSendActions nat rnat SendActions {..} = SendActions withConnectionTo'
         Conversation l -> Conversation $ \cactions -> rnat (l (hoistConversationActions nat cactions))
 
 type ListenerIndex packing peerData m =
-    Map MessageName (ListenerAction packing peerData m)
+    Map MessageName (Listener packing peerData m)
 
 makeListenerIndex :: [Listener packing peerData m]
                   -> (ListenerIndex packing peerData m, [MessageName])
@@ -370,7 +372,7 @@ node mkEndPoint mkReceiveDelay mkConnectDelay prng packing peerData nodeEnv k = 
             Input msgName -> do
                 let listener = M.lookup msgName listenerIndex
                 case listener of
-                    Just (ListenerActionConversation action) ->
+                    Just (Listener action) ->
                         let cactions = nodeConversationActions nodeUnit peerId packing inchan outchan
                         in  action peerData peerId cactions
                     Nothing -> error ("handlerInOut : no listener for " ++ show msgName)
