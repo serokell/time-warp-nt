@@ -18,6 +18,7 @@
 module Node (
 
       Node(..)
+    , LL.NodeId(..)
     , LL.NodeEnvironment(..)
     , LL.defaultNodeEnvironment
     , LL.ReceiveDelay
@@ -45,9 +46,9 @@ module Node (
     , ListenerAction
 
     , hoistListenerAction
+    , hoistListener
     , hoistSendActions
     , hoistConversationActions
-    , LL.NodeId(..)
 
     , LL.Statistics(..)
     , LL.PeerStatistics(..)
@@ -111,20 +112,27 @@ type Worker packing peerData m = SendActions packing peerData m -> m ()
 data Listener packingType peerData m where
   Listener
     :: ( Serializable packingType snd, Serializable packingType rcv, Message rcv )
-    => ListenerAction packingType peerData snd rcv m
+    => ListenerAction peerData snd rcv m
     -> Listener packingType peerData m
 
 -- | A listener that handles an incoming bi-directional conversation.
-type ListenerAction packing peerData snd rcv m =
+type ListenerAction peerData snd rcv m =
     peerData -> LL.NodeId -> ConversationActions snd rcv m -> m ()
 
 hoistListenerAction
     :: (forall a. n a -> m a)
     -> (forall a. m a -> n a)
-    -> ListenerAction packing peerData snd rcv n
-    -> ListenerAction packing peerData snd rcv m
+    -> ListenerAction peerData snd rcv n
+    -> ListenerAction peerData snd rcv m
 hoistListenerAction nat rnat f =
     \peerData nId convActions -> nat $ f peerData nId (hoistConversationActions rnat convActions)
+
+hoistListener
+    :: (forall a. n a -> m a)
+    -> (forall a. m a -> n a)
+    -> Listener packing peerData n
+    -> Listener packing peerData m
+hoistListener nat rnat (Listener la) = Listener $ hoistListenerAction nat rnat la
 
 -- | Gets message type basing on type of incoming messages
 listenerMessageName :: Listener packing peerData m -> MessageName

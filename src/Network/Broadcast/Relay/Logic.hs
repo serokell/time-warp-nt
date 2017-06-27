@@ -27,7 +27,7 @@ import           Universum
 import           Mockable                           (Mockable, Throw)
 import qualified Mockable.Concurrent                as Concurrent
 import qualified Mockable.Channel                   as Channel
-import           Node                               (Listener (..),
+import           Node                               (Listener (..), ListenerAction,
                                                      SendActions (..), Conversation (..),
                                                      ConversationActions (..),
                                                      NodeId)
@@ -67,9 +67,11 @@ listenersForRelay
     => Relay packingType m
     -> [Listener packingType peerData m]
 listenersForRelay (InvReqData mP irdP@InvReqDataParams{..}) =
-    [handleReqL handleReq, handleInvL mP irdP]
+    [Listener (handleReqL handleReq), Listener (handleInvL mP irdP)]
 listenersForRelay (Data mP DataParams{..}) =
-    [handleDataL mP handleDataOnly]
+    [Listener (handleDataL mP handleDataOnly)]
+
+
 
 -- | Create listeners for a list of relay descriptions. Include these as
 --   listeners in your node and it will carry out a relay broadcast.
@@ -200,16 +202,12 @@ invReqDataConversation_ key conts conv = do
 --   know you want some data, you can just ReqMsg it and the peer will give it
 --   to you if they have it.
 handleReqL
-    :: forall packingType peerData key value m .
-       ( Msg.Serializable packingType (ReqMsg key)
-       , Msg.Serializable packingType (InvOrData key value)
-       -- , Msg.Message (InvOrData key value)
-       , Msg.Message (ReqMsg key)
-       , Monad m
+    :: forall peerData key value m .
+       ( Monad m
        )
     => (NodeId -> key -> m (Maybe value))
-    -> Listener packingType peerData m
-handleReqL handleReq = Listener $ \_ peer cactions ->
+    -> ListenerAction peerData (InvOrData key value) (ReqMsg key) m
+handleReqL handleReq = \_ peer cactions ->
    let handlingLoop = do
            mbMsg <- recv cactions maxBound
            whenJust mbMsg $ \ReqMsg{..} -> do
@@ -247,8 +245,8 @@ handleInvL
      )
   => (PropagationMsg packingType -> m ()) -- ^ How to relay the data.
   -> InvReqDataParams key value m
-  -> Listener packingType peerData m
-handleInvL propagateData InvReqDataParams{..} = Listener $ \_ peer cactions ->
+  -> ListenerAction peerData (ReqMsg key) (InvOrData key value) m
+handleInvL propagateData InvReqDataParams{..} = \_ peer cactions ->
     let handlingLoop = do
             -- Expect an 'InvMsg'.
             -- Actually, this is 'InvOrData', and we give an error in case
@@ -288,8 +286,8 @@ handleDataL
        )
     => (PropagationMsg packingType -> m ()) -- ^ How to relay the data.
     -> (NodeId -> value -> m Bool) -- ^ Give 'True' to propagate, 'False' otherwise.
-    -> Listener packingType peerData m
-handleDataL propagateData handleData = Listener $ \_ peer (cactions :: ConversationActions Void (DataMsg value) m) ->
+    -> ListenerAction peerData Void (DataMsg value) m
+handleDataL propagateData handleData = \_ peer (cactions :: ConversationActions Void (DataMsg value) m) ->
     let handlingLoop = do
             mbMsg <- recv cactions maxBound
             whenJust mbMsg $ \DataMsg{..} -> do
