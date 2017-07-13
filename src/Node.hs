@@ -164,12 +164,30 @@ data SendActions packing peerData peer msgClass m = SendActions {
               LL.NodeId
            -> (peerData -> Conversation packing m t)
            -> m t
-       -- Schedule a conversation with 0 or more peers.
-       -- After they have all been enqueued, a map is given with values which
-       -- will return once the conversation to that node has returned, possibly
-       -- throwing exceptions.
-       -- There is no required relationship between the input 'Set peer' and
-       -- the keys in the resulting 'Map peer (m t)'.
+
+       -- Schedule a conversation with some peers. The choice of /which/ peers
+       -- to converse with is primarily /not/ up to the caller, but is based on
+       -- the policy that the queue was set up with. The policy chooses the
+       -- peers to converse with based on the supplied message class (but also
+       -- on separate routing information and dynamic network conditions).
+       --
+       -- The parameter with a set of peers simply provides additional peers
+       -- that the policy can consider: they may or may not actually be used.
+       --
+       -- The action returns promptly, once the conversation has been placed in
+       -- the outbound queue. The resulting 'Map' contains an entry for each
+       -- peer that the conversation was actually enqueued for (i.e. the
+       -- outcome of the routing policy). It is possible for this map to be
+       -- empty, if no peer could be found to send to. This usually indicates a
+       -- failure.
+       --
+       -- The result 'Map' values are each an action to wait for the
+       -- conversation to be completed. They return the conversation result or
+       -- throw an exception if the conversation itself failed.
+       --
+       -- This way, if you ignore the 'Map' result then the enqueue is
+       -- asynchronous, but if you traverse the Map results then it is of
+       -- course synchronous.
      , enqueueConversation :: forall t .
               Set peer
            -> msgClass
