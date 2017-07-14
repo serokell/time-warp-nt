@@ -49,11 +49,13 @@ module Network.Broadcast.OutboundQueue (
   , enqueue
   , enqueueSync'
   , enqueueSync
+  , enqueueAsync
   , enqueueCherished
     -- ** To specified peers
   , enqueueTo
   , enqueueSyncTo'
   , enqueueSyncTo
+  , enqueueAsyncTo
   , enqueueCherishedTo
     -- * Dequeuing
   , SendMsg
@@ -912,6 +914,18 @@ enqueueSync outQ msgType msg origin peers =
     warnIfNotOneSuccess outQ msg $
       enqueueSync' outQ msgType msg origin peers
 
+-- | 'enqueue' variation which allows the caller to decide for each peer
+-- whether to wait on the result or not.
+enqueueAsync :: (MonadIO m, WithLogger m)
+             => OutboundQ msg nid
+             -> MsgType    -- ^ Type of the message being sent
+             -> msg a      -- ^ Message to send
+             -> Origin nid -- ^ Origin of this message
+             -> Peers nid  -- ^ Additional peers (along with subscribers)
+             -> m [(nid, m (Either SomeException a))]
+enqueueAsync outQ msgType msg origin peers' = do
+    waitAsync <$> intEnqueueTo outQ msgType msg origin (EnqToSubscr peers')
+
 -- | Enqueue a message which really should not get lost
 --
 -- Returns 'True' if the message was successfully sent.
@@ -964,6 +978,18 @@ enqueueSyncTo outQ msgType msg origin peers =
     warnIfNotOneSuccess outQ msg $
       enqueueSyncTo' outQ msgType msg origin peers
 
+-- | 'enqueueTo' variation which allows the caller to decide for each peer
+-- whether to wait on the result or not.
+enqueueAsyncTo :: (MonadIO m, WithLogger m)
+               => OutboundQ msg nid
+               -> MsgType    -- ^ Type of the message being sent
+               -> msg a      -- ^ Message to send
+               -> Origin nid -- ^ Origin of this message
+               -> Peers nid  -- ^ Who to send to (modulo policy)?
+               -> m [(nid, m (Either SomeException a))]
+enqueueAsyncTo outQ msgType msg origin peers' = do
+    waitAsync <$> intEnqueueTo outQ msgType msg origin (EnqToPeers peers')
+
 -- | Variation on 'enqueueCherished' using given peers instead of subscribers
 enqueueCherishedTo :: forall m msg nid a. (MonadIO m, WithLogger m)
                    => OutboundQ msg nid
@@ -1007,6 +1033,10 @@ waitForResults :: MonadIO m
                => [Packet msg nid a] -> m [(nid, Either SomeException a)]
 waitForResults packets = liftIO $
     forM packets $ \p -> (packetDestId p, ) <$> readMVar (packetSent p)
+
+waitAsync :: MonadIO m
+          => [Packet msg nid a] -> [(nid, m (Either SomeException a))]
+waitAsync = map $ \Packet{..} -> (packetDestId, liftIO $ readMVar packetSent)
 
 -- | Make sure a synchronous send succeeds to at least one peer
 warnIfNotOneSuccess :: forall m msg nid a. (MonadIO m, WithLogger m)
