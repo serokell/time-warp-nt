@@ -14,6 +14,7 @@
 
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE MultiWayIf          #-}
 {-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE RankNTypes          #-}
@@ -44,9 +45,16 @@ module Network.Broadcast.OutboundQueue (
   , defaultFailurePolicy
     -- * Enqueueing
   , Origin(..)
+    -- ** Using subscribers
   , enqueue
+  , enqueueSync'
   , enqueueSync
   , enqueueCherished
+    -- ** To specified peers
+  , enqueueTo
+  , enqueueSyncTo'
+  , enqueueSyncTo
+  , enqueueCherishedTo
     -- * Dequeuing
   , SendMsg
   , dequeueThread
@@ -70,6 +78,7 @@ import Control.Lens
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Either (rights)
+import Data.Maybe (maybeToList)
 import Data.Map.Strict (Map)
 import Data.Monoid ((<>))
 import Data.Set (Set)
@@ -191,11 +200,23 @@ removePeer toRemove peers =
 -- give up on forwarding set.
 newtype MaxAhead = MaxAhead Int
 
-data Enqueue = Enqueue {
-      enqNodeType   :: NodeType
-    , enqMaxAhead   :: MaxAhead
-    , enqPrecedence :: Precedence
-    }
+-- | Enqueueing instruction
+data Enqueue =
+    -- | For /all/ forwarding sets of the specified node type, chose /one/
+    -- alternative to send the message to
+    EnqueueAll {
+        enqNodeType   :: NodeType
+      , enqMaxAhead   :: MaxAhead
+      , enqPrecedence :: Precedence
+      }
+
+    -- | Choose /one/ alternative of /one/ forwarding set of any of the
+    -- specified node types (listed in order of preference)
+  | EnqueueOne {
+        enqNodeTypes  :: [NodeType]
+      , enqMaxAhead   :: MaxAhead
+      , enqPrecedence :: Precedence
+      }
 
 -- | The enqueuing policy
 --
@@ -212,6 +233,7 @@ type EnqueuePolicy nid =
         -> Origin nid   -- ^ Where did this message originate?
         -> [Enqueue]
 
+-- TODO: Verify the policy for data requests
 defaultEnqueuePolicy :: NodeType           -- ^ Type of this node
                      -> EnqueuePolicy nid
 defaultEnqueuePolicy NodeCore = go
@@ -219,40 +241,48 @@ defaultEnqueuePolicy NodeCore = go
     -- Enqueue policy for core nodes
     go :: EnqueuePolicy nid
     go MsgBlockHeader _ = [
-        Enqueue NodeCore  (MaxAhead 0) PHighest
-      , Enqueue NodeRelay (MaxAhead 0) PMedium
+        EnqueueAll NodeCore  (MaxAhead 0) PHighest
+      , EnqueueAll NodeRelay (MaxAhead 0) PMedium
       ]
     go MsgMPC _ = [
-        Enqueue NodeCore (MaxAhead 1) PHigh
+        EnqueueAll NodeCore (MaxAhead 1) PHigh
         -- not sent to relay nodes
       ]
     go MsgTransaction _ = [
-        Enqueue NodeCore (MaxAhead 20) PLow
+        EnqueueAll NodeCore (MaxAhead 20) PLow
         -- not sent to relay nodes
+      ]
+    go MsgRequestData _ = [
+        -- We never ask for data from edge nodes
+        EnqueueOne [NodeRelay, NodeCore] (MaxAhead 0) PLowest
       ]
 defaultEnqueuePolicy NodeRelay = go
   where
     -- Enqueue policy for relay nodes
     go :: EnqueuePolicy nid
     go MsgBlockHeader _ = [
-        Enqueue NodeRelay (MaxAhead 0) PHighest
-      , Enqueue NodeCore  (MaxAhead 0) PHigh
-      , Enqueue NodeEdge  (MaxAhead 0) PMedium
+        EnqueueAll NodeRelay (MaxAhead 0) PHighest
+      , EnqueueAll NodeCore  (MaxAhead 0) PHigh
+      , EnqueueAll NodeEdge  (MaxAhead 0) PMedium
       ]
     go MsgTransaction _ = [
-        Enqueue NodeCore  (MaxAhead 20) PLow
-      , Enqueue NodeRelay (MaxAhead 20) PLowest
+        EnqueueAll NodeCore  (MaxAhead 20) PLow
+      , EnqueueAll NodeRelay (MaxAhead 20) PLowest
         -- transactions not forwarded to edge nodes
       ]
     go MsgMPC _ = [
         -- Relay nodes never sent any MPC messages to anyone
+      ]
+    go MsgRequestData _ = [
+        -- We never ask for data from edge nodes
+        EnqueueOne [NodeRelay, NodeCore] (MaxAhead 20) PLowest
       ]
 defaultEnqueuePolicy NodeEdge = go
   where
     -- Enqueue policy for edge nodes
     go :: EnqueuePolicy nid
     go MsgTransaction OriginSender = [
-        Enqueue NodeRelay (MaxAhead 0) PHighest
+        EnqueueAll NodeRelay (MaxAhead 0) PHighest
       ]
     go MsgTransaction (OriginForward _) = [
         -- don't forward transactions that weren't created at this node
@@ -262,6 +292,10 @@ defaultEnqueuePolicy NodeEdge = go
       ]
     go MsgMPC _ = [
         -- not relevant
+      ]
+    go MsgRequestData _ = [
+        -- Edge nodes can only talk to relay nodes
+        EnqueueOne [NodeRelay] (MaxAhead 20) PLowest
       ]
 
 {-------------------------------------------------------------------------------
@@ -511,63 +545,90 @@ intEnqueue :: forall m msg nid a. (MonadIO m, WithLogger m)
            -> Peers nid
            -> m [Packet msg nid a]
 intEnqueue outQ@OutQ{..} msgType msg origin peers = fmap concat $
-    forM (qEnqueuePolicy msgType origin) $ \enq@Enqueue{..} -> do
+    forM (qEnqueuePolicy msgType origin) $ \case
 
-      let fwdSets :: AllOf (Alts nid)
-          fwdSets = removeOrigin origin $ peers ^. peersOfType enqNodeType
+      EnqueueAll{..} -> do
+        let fwdSets :: AllOf (Alts nid)
+            fwdSets = removeOrigin $ peers ^. peersOfType enqNodeType
 
-          goFwdSets :: [Packet msg nid a]
+            sendAll :: [Packet msg nid a]
                     -> AllOf (Alts nid)
                     -> m [Packet msg nid a]
-          goFwdSets acc []           = return acc
-          goFwdSets acc (alts:altss) = do
-            mPacket <- goFwdSet (map packetDestId acc) alts
-            case mPacket of
-              Nothing -> goFwdSets    acc  altss
-              Just p  -> goFwdSets (p:acc) altss
+            sendAll acc []           = return acc
+            sendAll acc (alts:altss) = do
+              mPacket <- sendFwdSet (map packetDestId acc)
+                                    enqMaxAhead
+                                    enqPrecedence
+                                    (enqNodeType, alts)
+              case mPacket of
+                Nothing -> sendAll    acc  altss
+                Just p  -> sendAll (p:acc) altss
 
-          goFwdSet :: [nid] -> Alts nid -> m (Maybe (Packet msg nid a))
-          goFwdSet alreadyPicked alts = do
-            mAlt <- pickAlt outQ enq $ filter (`notElem` alreadyPicked) alts
-            case mAlt of
-              Nothing -> do
-                logWarning $ msgNoAlt alts
-                return Nothing
-              Just alt -> liftIO $ do
-                sentVar <- newEmptyMVar
-                let packet = Packet {
-                                 packetPayload  = msg
-                               , packetDestId   = alt
-                               , packetMsgType  = msgType
-                               , packetDestType = enqNodeType
-                               , packetPrec     = enqPrecedence
-                               , packetSent     = sentVar
-                               }
-                mqEnqueue qScheduled (EnqPacket packet)
-                poke qSignal
-                return $ Just packet
+        enqueued <- sendAll [] fwdSets
 
-      enqueued <- goFwdSets [] fwdSets
+        -- Log an error if we didn't manage to send the message to any peer
+        -- at all (provided that we were configured to send it to some)
+        if | null fwdSets ->
+               logDebug $ msgNotSent enqNodeType -- This isn't an error
+           | null enqueued ->
+               logError $ msgLost fwdSets
+           | otherwise ->
+               logDebug $ msgEnqueued enqueued
 
-      -- Log an error if we didn't manage to send the message to any peer
-      -- at all (provided that we were configured to send it to some)
-      if | null fwdSets ->
-             logDebug $ msgNotSent enq -- This isn't an error
-         | null enqueued ->
-             logError msgLost
-         | otherwise ->
-             logDebug $ msgEnqueued enqueued
+        return enqueued
 
-      return enqueued
+      EnqueueOne{..} -> do
+        let fwdSets :: [(NodeType, Alts nid)]
+            fwdSets = concatMap
+                        (\t -> map (t,) $ removeOrigin $ peers ^. peersOfType t)
+                        enqNodeTypes
+
+            sendOne :: [(NodeType, Alts nid)] -> m [Packet msg nid a]
+            sendOne = fmap maybeToList
+                    . orElseM
+                    . map (sendFwdSet [] enqMaxAhead enqPrecedence)
+
+        enqueued <- sendOne fwdSets
+        when (null enqueued) $
+          logError $ msgLost fwdSets
+        return enqueued
   where
+    -- Attempt to send the message to a single forwarding set
+    sendFwdSet :: [nid]                -- ^ Nodes we already sent something to
+               -> MaxAhead             -- ^ Max allowed number of msgs ahead
+               -> Precedence           -- ^ Precedence of the message
+               -> (NodeType, Alts nid) -- ^ Alternatives to choose from
+               -> m (Maybe (Packet msg nid a))
+    sendFwdSet alreadyPicked maxAhead prec (nodeType, alts) = do
+      mAlt <- pickAlt outQ maxAhead prec $ filter (`notElem` alreadyPicked) alts
+      case mAlt of
+        Nothing -> do
+          logWarning $ msgNoAlt alts
+          return Nothing
+        Just alt -> liftIO $ do
+          sentVar <- newEmptyMVar
+          let packet = Packet {
+                           packetPayload  = msg
+                         , packetDestId   = alt
+                         , packetMsgType  = msgType
+                         , packetDestType = nodeType
+                         , packetPrec     = prec
+                         , packetSent     = sentVar
+                         }
+          mqEnqueue qScheduled (EnqPacket packet)
+          poke qSignal
+          return $ Just packet
+
     -- Don't forward a message back to the node that sent it originally
     -- (We assume that a node does not appear in its own list of peers)
-    removeOrigin :: Origin nid -> AllOf (Alts nid) -> AllOf (Alts nid)
-    removeOrigin OriginSender      = id
-    removeOrigin (OriginForward n) = filter (not . null) . map (filter (/= n))
+    removeOrigin :: AllOf (Alts nid) -> AllOf (Alts nid)
+    removeOrigin =
+      case origin of
+        OriginSender    -> id
+        OriginForward n -> filter (not . null) . map (filter (/= n))
 
-    msgNotSent :: Enqueue -> Text
-    msgNotSent Enqueue{..} = sformat
+    msgNotSent :: NodeType -> Text
+    msgNotSent nodeType = sformat
       ( shown
       % ": message "
       % formatMsg
@@ -578,7 +639,7 @@ intEnqueue outQ@OutQ{..} msgType msg origin peers = fmap concat $
       )
       qSelf
       msg
-      enqNodeType
+      nodeType
       peers
 
     msgEnqueued :: [Packet msg nid a] -> Text
@@ -591,21 +652,25 @@ intEnqueue outQ@OutQ{..} msgType msg origin peers = fmap concat $
       sformat (shown % ": could not choose suitable alternative from " % shown)
               qSelf alts
 
-    msgLost :: Text
-    msgLost =
+    msgLost :: Show fwdSets => fwdSets -> Text
+    msgLost fwdSets =
       sformat ( shown
-              % ": failed to send message " % formatMsg
+              % ": failed to enqueue message " % formatMsg
               % " with origin " % shown
-              % " to peers " % shown
+              % " to forwarding sets " % shown
               )
-              qSelf msg origin peers
+              qSelf msg origin fwdSets
 
 pickAlt :: (MonadIO m, WithLogger m)
-        => OutboundQ msg nid -> Enqueue -> Alts nid -> m (Maybe nid)
-pickAlt outQ Enqueue{enqMaxAhead = MaxAhead maxAhead, ..} alts =
+        => OutboundQ msg nid
+        -> MaxAhead
+        -> Precedence
+        -> Alts nid
+        -> m (Maybe nid)
+pickAlt outQ (MaxAhead maxAhead) prec alts =
     orElseM [ do
         failure <- hasRecentFailure outQ alt
-        ahead   <- countAhead outQ alt enqPrecedence
+        ahead   <- countAhead outQ alt prec
         return $ if not failure && ahead <= maxAhead
                    then Just alt
                    else Nothing
@@ -784,10 +849,6 @@ data Origin nid =
   | OriginForward nid
   deriving (Show)
 
-instance Functor Origin where
-    fmap _ OriginSender = OriginSender
-    fmap f (OriginForward nid) = OriginForward (f nid)
-
 -- | Queue a message to be send to all peers, but don't wait (asynchronous API)
 --
 -- The message will be sent to the specified peers as well as any subscribers.
@@ -802,13 +863,10 @@ enqueue :: (MonadIO m, WithLogger m)
         -> MsgType    -- ^ Type of the message being sent (to determine policy)
         -> msg a      -- ^ Message to send
         -> Origin nid -- ^ Origin of this message
-        -> Peers nid  -- ^ Additional peers (in addition to subscribers)
+        -> Peers nid  -- ^ Additional peers (along with subscribers)
         -> m ()
-enqueue outQ@OutQ{..} msgType msg origin peers' = do
-    peers    <- liftIO $ readMVar qPeers
-    _packets <- intEnqueue outQ msgType msg origin (peers <> peers')
-    -- Don't wait for any results
-    return ()
+enqueue outQ msgType msg origin peers' =
+    void $ intEnqueueTo outQ msgType msg origin (EnqToSubscr peers')
 
 -- | Queue a message and wait for it to have been sent
 --
@@ -819,12 +877,11 @@ enqueueSync' :: (MonadIO m, WithLogger m)
              -> MsgType    -- ^ Type of the message being sent
              -> msg a      -- ^ Message to send
              -> Origin nid -- ^ Origin of this message
-             -> Peers nid  -- ^ Additional peers (in addition to subscribers)
+             -> Peers nid  -- ^ Additional peers (along with subscribers)
              -> m [(nid, Either SomeException a)]
-enqueueSync' outQ@OutQ{..} msgType msg origin peers' = do
-    peers   <- liftIO $ readMVar qPeers
-    packets <- intEnqueue outQ msgType msg origin (peers <> peers')
-    liftIO $ forM packets $ \p -> (packetDestId p, ) <$> readMVar (packetSent p)
+enqueueSync' outQ msgType msg origin peers' = do
+    packets <- intEnqueueTo outQ msgType msg origin (EnqToSubscr peers')
+    waitForResults packets
 
 -- | Queue a message and wait for it to have been sent
 --
@@ -838,35 +895,136 @@ enqueueSync :: forall m msg nid a. (MonadIO m, WithLogger m)
             -> MsgType    -- ^ Type of the message being sent
             -> msg a      -- ^ Message to send
             -> Origin nid -- ^ Origin of this message
-            -> Peers nid  -- ^ Additional peers (in addition to subscribers)
+            -> Peers nid  -- ^ Additional peers (along with subscribers)
             -> m ()
-enqueueSync outQ@OutQ{..} msgType msg origin peers = do
-    attempts <- enqueueSync' outQ msgType msg origin peers
-
-    let succs :: [a]
-        succs = rights (map snd attempts)
-
-    when (null succs) $
-      logError $ msgNotSent (map fst attempts)
-  where
-    msgNotSent :: [nid] ->Text
-    msgNotSent nids =
-      sformat ( shown % ": message " % formatMsg
-              % " got enqueued to % " % shown
-              % " but all sends failed"
-              )
-              qSelf msg nids
+enqueueSync outQ msgType msg origin peers =
+    warnIfNotOneSuccess outQ msg $
+      enqueueSync' outQ msgType msg origin peers
 
 -- | Enqueue a message which really should not get lost
 --
 -- Returns 'True' if the message was successfully sent.
 enqueueCherished :: forall m msg nid a. (MonadIO m, WithLogger m)
                  => OutboundQ msg nid
-                 -> MsgType
-                 -> msg a
-                 -> Peers nid
+                 -> MsgType   -- ^ Type of the message being sent
+                 -> msg a     -- ^ Message to send
+                 -> Peers nid -- ^ Additional peers (along with subscribers)
                  -> m Bool
-enqueueCherished outQ@OutQ{..} msgType msg peers =
+enqueueCherished outQ msgType msg peers =
+    cherish outQ $
+      enqueueSync' outQ msgType msg OriginSender peers
+
+{-------------------------------------------------------------------------------
+  Variations that take a specific set of peers
+-------------------------------------------------------------------------------}
+
+-- | Variation on 'enqueue' using given peers instead of subscribers
+enqueueTo :: (MonadIO m, WithLogger m)
+          => OutboundQ msg nid
+          -> MsgType    -- ^ Type of the message being sent
+          -> msg a      -- ^ Message to send
+          -> Origin nid -- ^ Origin of this message
+          -> Peers nid  -- ^ Who to send to (modulo policy)?
+          -> m ()
+enqueueTo outQ msgType msg origin peers =
+    void $ intEnqueueTo outQ msgType msg origin (EnqToPeers peers)
+
+-- | Variation on 'enqueueSync'' using given peers instead of subscribers
+enqueueSyncTo' :: (MonadIO m, WithLogger m)
+               => OutboundQ msg nid
+               -> MsgType    -- ^ Type of the message being sent
+               -> msg a      -- ^ Message to send
+               -> Origin nid -- ^ Origin of this message
+               -> Peers nid  -- ^ Who to send to (modulo policy)?
+               -> m [(nid, Either SomeException a)]
+enqueueSyncTo' outQ msgType msg origin peers' = do
+    packets <- intEnqueueTo outQ msgType msg origin (EnqToPeers peers')
+    waitForResults packets
+
+-- | Variation on 'enqueueSync' using given peers instead of subscribers
+enqueueSyncTo :: forall m msg nid a. (MonadIO m, WithLogger m)
+              => OutboundQ msg nid
+              -> MsgType    -- ^ Type of the message being sent
+              -> msg a      -- ^ Message to send
+              -> Origin nid -- ^ Origin of this message
+              -> Peers nid  -- ^ Who to send to (modulo policy)?
+              -> m ()
+enqueueSyncTo outQ msgType msg origin peers =
+    warnIfNotOneSuccess outQ msg $
+      enqueueSyncTo' outQ msgType msg origin peers
+
+-- | Variation on 'enqueueCherished' using given peers instead of subscribers
+enqueueCherishedTo :: forall m msg nid a. (MonadIO m, WithLogger m)
+                   => OutboundQ msg nid
+                   -> MsgType   -- ^ Type of the message being sent
+                   -> msg a     -- ^ Message to send
+                   -> Peers nid -- ^ Who to send to (modulo policy)?
+                   -> m Bool
+enqueueCherishedTo outQ msgType msg peers =
+    cherish outQ $
+      enqueueSyncTo' outQ msgType msg OriginSender peers
+
+{-------------------------------------------------------------------------------
+  Internal generalization of the enqueueing API
+-------------------------------------------------------------------------------}
+
+data EnqueueTo nid =
+    -- | Enqueue to all subscribers and some additional peers
+    --
+    -- The additional peers argument will eventually be removed
+    EnqToSubscr (Peers nid)
+
+    -- | Enqueue to a specific set of peers, ignoring subscribers
+  | EnqToPeers (Peers nid)
+
+-- | Enqueue message to the specified set of peers
+intEnqueueTo :: (MonadIO m, WithLogger m)
+             => OutboundQ msg nid
+             -> MsgType
+             -> msg a
+             -> Origin nid
+             -> EnqueueTo nid
+             -> m [Packet msg nid a]
+intEnqueueTo outQ@OutQ{..} msgType msg origin (EnqToSubscr peers') = do
+    peers <- liftIO $ readMVar qPeers
+    intEnqueue outQ msgType msg origin (peers <> peers')
+intEnqueueTo outQ@OutQ{..} msgType msg origin (EnqToPeers peers') = do
+    intEnqueue outQ msgType msg origin (peers')
+
+-- | Wait until all sends have completed (succcessfully or unsuccessfully)
+waitForResults :: MonadIO m
+               => [Packet msg nid a] -> m [(nid, Either SomeException a)]
+waitForResults packets = liftIO $
+    forM packets $ \p -> (packetDestId p, ) <$> readMVar (packetSent p)
+
+-- | Make sure a synchronous send succeeds to at least one peer
+warnIfNotOneSuccess :: forall m msg nid a. (MonadIO m, WithLogger m)
+                    => OutboundQ msg nid
+                    -> msg a
+                    -> m [(nid, Either SomeException a)]
+                    -> m ()
+warnIfNotOneSuccess OutQ{qSelf} msg act = do
+    attempts <- act
+    -- If the attempts is null, we would already have logged an error that
+    -- we couldn't enqueue at all
+    when (not (null attempts) && null (successes attempts)) $
+      logError $ msgNotSent (map fst attempts)
+  where
+    msgNotSent :: [nid] ->Text
+    msgNotSent nids =
+      sformat ( shown % ": message " % formatMsg
+              % " got enqueued to " % shown
+              % " but all sends failed"
+              )
+              qSelf msg nids
+
+-- | Repeatedly run an action until at least one send succeeds, we run out of
+-- options, or we reach a predetermined maximum number of iterations.
+cherish :: forall m msg nid a. (MonadIO m, WithLogger m)
+        => OutboundQ msg nid
+        -> m [(nid, Either SomeException a)]
+        -> m Bool
+cherish OutQ{qSelf} act =
     go maxNumIterations
   where
     go :: Int -> m Bool
@@ -874,12 +1032,8 @@ enqueueCherished outQ@OutQ{..} msgType msg peers =
       logError $ msgLoop
       return False
     go n = do
-      attempts <- enqueueSync' outQ msgType msg OriginSender peers
-
-      let succs :: [a]
-          succs = rights (map snd attempts)
-
-      if | not (null succs) ->
+      attempts <- act
+      if | not (null (successes attempts)) ->
              -- We managed to successfully send it to at least one peer
              -- Consider it a job well done
              return True
@@ -904,6 +1058,9 @@ enqueueCherished outQ@OutQ{..} msgType msg peers =
     msgLoop =
       sformat (shown % ": enqueueCherished loop? This a policy failure.")
               qSelf
+
+successes :: [(nid, Either SomeException a)] -> [a]
+successes = rights . map snd
 
 {-------------------------------------------------------------------------------
   Dequeue thread

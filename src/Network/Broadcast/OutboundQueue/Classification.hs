@@ -25,6 +25,9 @@ data MsgType =
 
     -- | MPC messages
   | MsgMPC
+
+    -- | Request information (from peers known to have it)
+  | MsgRequestData
   deriving (Show, Eq, Ord)
 
 -- | Node types
