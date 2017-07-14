@@ -192,12 +192,12 @@ nodeForwardListener node = forever $ do
       logDebug $ discarded msgObj
     else do
       logNotice $ received msgObj
-      unless (msgType msgData == MsgRequestBlock) $
-        OutQ.enqueue (nodeOutQ node)
-                     (msgType msgData)
-                     msgObj
-                     (OutQ.OriginForward (msgSender msgData))
-                     mempty
+      unless (msgType msgData == MsgRequestBlock) $ void $
+        OutQ.enqueueSync' (nodeOutQ node)
+                          (msgType msgData)
+                          msgObj
+                          (OutQ.OriginForward (msgSender msgData))
+                          mempty
   where
     received, discarded :: MsgObj -> Text
     received  = sformat (shown % ": received "  % formatMsg) (nodeId node)
@@ -224,9 +224,9 @@ send sync from msgType msgId = do
   where
     msgData = MsgData (nodeId from) msgType msgId
     msgObj  = mkMsgObj msgData
-    enqueue = case sync of
-                Synchronous  -> OutQ.enqueue
-                Asynchronous -> OutQ.enqueueSync
+    enqueue = \oq mt conv origin peers -> case sync of
+                Synchronous  -> void $ OutQ.enqueueSync oq mt conv origin peers
+                Asynchronous -> void $ OutQ.enqueue oq mt conv origin peers
 
 -- | Send a message to and from the specified nodes
 sendTo :: Sync -> Node -> [Node] -> MsgType -> MsgId -> Enqueue ()
@@ -237,9 +237,9 @@ sendTo sync from to msgType msgId = do
   where
     msgData = MsgData (nodeId from) msgType msgId
     msgObj  = mkMsgObj msgData
-    enqueue = case sync of
-                Synchronous  -> OutQ.enqueueTo
-                Asynchronous -> OutQ.enqueueSyncTo
+    enqueue = \oq mt conv origin peers -> case sync of
+                Synchronous  -> void $ OutQ.enqueueSyncTo oq mt conv origin peers
+                Asynchronous -> void $ OutQ.enqueueTo oq mt conv origin peers
 
 {-------------------------------------------------------------------------------
   Message pool

@@ -49,13 +49,11 @@ module Network.Broadcast.OutboundQueue (
   , enqueue
   , enqueueSync'
   , enqueueSync
-  , enqueueAsync
   , enqueueCherished
     -- ** To specified peers
   , enqueueTo
   , enqueueSyncTo'
   , enqueueSyncTo
-  , enqueueAsyncTo
   , enqueueCherishedTo
     -- * Dequeuing
   , SendMsg
@@ -873,13 +871,13 @@ data Origin nid =
 -- make integration easier.
 enqueue :: (MonadIO m, WithLogger m)
         => OutboundQ msg nid
-        -> MsgType    -- ^ Type of the message being sent (to determine policy)
+        -> MsgType    -- ^ Type of the message being sent
         -> msg a      -- ^ Message to send
         -> Origin nid -- ^ Origin of this message
         -> Peers nid  -- ^ Additional peers (along with subscribers)
-        -> m ()
-enqueue outQ msgType msg origin peers' =
-    void $ intEnqueueTo outQ msgType msg origin (EnqToSubscr peers')
+        -> m [(nid, m (Either SomeException a))]
+enqueue outQ msgType msg origin peers' = do
+    waitAsync <$> intEnqueueTo outQ msgType msg origin (EnqToSubscr peers')
 
 -- | Queue a message and wait for it to have been sent
 --
@@ -893,8 +891,8 @@ enqueueSync' :: (MonadIO m, WithLogger m)
              -> Peers nid  -- ^ Additional peers (along with subscribers)
              -> m [(nid, Either SomeException a)]
 enqueueSync' outQ msgType msg origin peers' = do
-    packets <- intEnqueueTo outQ msgType msg origin (EnqToSubscr peers')
-    waitForResults packets
+    promises <- enqueue outQ msgType msg origin peers'
+    traverse (\(nid, wait) -> (,) nid <$> wait) promises
 
 -- | Queue a message and wait for it to have been sent
 --
@@ -914,18 +912,6 @@ enqueueSync outQ msgType msg origin peers =
     warnIfNotOneSuccess outQ msg $
       enqueueSync' outQ msgType msg origin peers
 
--- | 'enqueue' variation which allows the caller to decide for each peer
--- whether to wait on the result or not.
-enqueueAsync :: (MonadIO m, WithLogger m)
-             => OutboundQ msg nid
-             -> MsgType    -- ^ Type of the message being sent
-             -> msg a      -- ^ Message to send
-             -> Origin nid -- ^ Origin of this message
-             -> Peers nid  -- ^ Additional peers (along with subscribers)
-             -> m [(nid, m (Either SomeException a))]
-enqueueAsync outQ msgType msg origin peers' = do
-    waitAsync <$> intEnqueueTo outQ msgType msg origin (EnqToSubscr peers')
-
 -- | Enqueue a message which really should not get lost
 --
 -- Returns 'True' if the message was successfully sent.
@@ -943,16 +929,17 @@ enqueueCherished outQ msgType msg peers =
   Variations that take a specific set of peers
 -------------------------------------------------------------------------------}
 
--- | Variation on 'enqueue' using given peers instead of subscribers
+-- | 'enqueueTo' variation which allows the caller to decide for each peer
+-- whether to wait on the result or not.
 enqueueTo :: (MonadIO m, WithLogger m)
           => OutboundQ msg nid
           -> MsgType    -- ^ Type of the message being sent
           -> msg a      -- ^ Message to send
           -> Origin nid -- ^ Origin of this message
           -> Peers nid  -- ^ Who to send to (modulo policy)?
-          -> m ()
-enqueueTo outQ msgType msg origin peers =
-    void $ intEnqueueTo outQ msgType msg origin (EnqToPeers peers)
+          -> m [(nid, m (Either SomeException a))]
+enqueueTo outQ msgType msg origin peers' = do
+    waitAsync <$> intEnqueueTo outQ msgType msg origin (EnqToPeers peers')
 
 -- | Variation on 'enqueueSync'' using given peers instead of subscribers
 enqueueSyncTo' :: (MonadIO m, WithLogger m)
@@ -963,8 +950,8 @@ enqueueSyncTo' :: (MonadIO m, WithLogger m)
                -> Peers nid  -- ^ Who to send to (modulo policy)?
                -> m [(nid, Either SomeException a)]
 enqueueSyncTo' outQ msgType msg origin peers' = do
-    packets <- intEnqueueTo outQ msgType msg origin (EnqToPeers peers')
-    waitForResults packets
+    promises <- enqueueTo outQ msgType msg origin peers'
+    traverse (\(nid, wait) -> (,) nid <$> wait) promises
 
 -- | Variation on 'enqueueSync' using given peers instead of subscribers
 enqueueSyncTo :: forall m msg nid a. (MonadIO m, WithLogger m)
@@ -977,18 +964,6 @@ enqueueSyncTo :: forall m msg nid a. (MonadIO m, WithLogger m)
 enqueueSyncTo outQ msgType msg origin peers =
     warnIfNotOneSuccess outQ msg $
       enqueueSyncTo' outQ msgType msg origin peers
-
--- | 'enqueueTo' variation which allows the caller to decide for each peer
--- whether to wait on the result or not.
-enqueueAsyncTo :: (MonadIO m, WithLogger m)
-               => OutboundQ msg nid
-               -> MsgType    -- ^ Type of the message being sent
-               -> msg a      -- ^ Message to send
-               -> Origin nid -- ^ Origin of this message
-               -> Peers nid  -- ^ Who to send to (modulo policy)?
-               -> m [(nid, m (Either SomeException a))]
-enqueueAsyncTo outQ msgType msg origin peers' = do
-    waitAsync <$> intEnqueueTo outQ msgType msg origin (EnqToPeers peers')
 
 -- | Variation on 'enqueueCherished' using given peers instead of subscribers
 enqueueCherishedTo :: forall m msg nid a. (MonadIO m, WithLogger m)
@@ -1027,12 +1002,6 @@ intEnqueueTo outQ@OutQ{..} msgType msg origin (EnqToSubscr peers') = do
     intEnqueue outQ msgType msg origin (peers <> peers')
 intEnqueueTo outQ@OutQ{..} msgType msg origin (EnqToPeers peers') = do
     intEnqueue outQ msgType msg origin (peers')
-
--- | Wait until all sends have completed (succcessfully or unsuccessfully)
-waitForResults :: MonadIO m
-               => [Packet msg nid a] -> m [(nid, Either SomeException a)]
-waitForResults packets = liftIO $
-    forM packets $ \p -> (packetDestId p, ) <$> readMVar (packetSent p)
 
 waitAsync :: MonadIO m
           => [Packet msg nid a] -> [(nid, m (Either SomeException a))]
@@ -1387,6 +1356,6 @@ asOutboundQueue oq mkNodeId mkNodeType mkMsgType mkOrigin converse = do
     enqueueIt peers msg conversation = do
         let peers' = simplePeers ((\nid -> (mkNodeType nid, nid)) <$> Set.toList peers)
             cc = ClassifiedConversation conversation
-        tlist <- enqueueSync' oq (mkMsgType msg) cc (mkOrigin msg) peers'
+        tlist <- enqueue oq (mkMsgType msg) cc (mkOrigin msg) peers'
         let tmap = Map.fromList tlist
-        return $ fmap (either M.throw return) tmap
+        return $ fmap (>>= either M.throw return) tmap
