@@ -105,7 +105,7 @@ relayDemo = do
         send Asynchronous (nodeEs !! 0) MsgTransaction (MsgId 0)
 
       block "* Basic relay test: code to edge" [nodeR] $ do
-        send Asynchronous nodeC1 MsgBlockHeader (MsgId 100)
+        send Asynchronous nodeC1 MsgAnnounceBlockHeader (MsgId 100)
 
       -- In order to test rate limiting, we send a message from all of the edge
       -- nodes at once. These should then arrive at the (single) core node one
@@ -125,9 +125,9 @@ relayDemo = do
         -- Although we enqueue the transactions before the block header, we
         -- should see in the output that the block headers are given priority.
         forM_ [300, 303 .. 309] $ \n -> do
-          send Asynchronous nodeR MsgTransaction (MsgId n)
-          send Asynchronous nodeR MsgTransaction (MsgId (n + 1))
-          send Asynchronous nodeR MsgBlockHeader (MsgId (n + 2))
+          send Asynchronous nodeR MsgTransaction         (MsgId n)
+          send Asynchronous nodeR MsgTransaction         (MsgId (n + 1))
+          send Asynchronous nodeR MsgAnnounceBlockHeader (MsgId (n + 2))
           liftIO $ threadDelay 2500000
 
       block "* Latency masking (and sync API)" [nodeC2] $ do
@@ -135,14 +135,14 @@ relayDemo = do
         -- (We cannot send two blocks at a time though, because then MaxAhead
         -- would not be satisfiable).
         forM_ [400, 402 .. 408] $ \n -> do
-          send Asynchronous nodeC3 MsgBlockHeader (MsgId n)
-          send Synchronous  nodeC3 MsgMPC         (MsgId (n + 1))
+          send Asynchronous nodeC3 MsgAnnounceBlockHeader (MsgId n)
+          send Synchronous  nodeC3 MsgMPC                 (MsgId (n + 1))
 
       block "* Sending to specific nodes" nodeEs $ do
         -- This will send to the relay node
-        sendTo Asynchronous nodeC1 [nodeC2, nodeR] MsgRequestData (MsgId 500)
+        sendTo Asynchronous nodeC1 [nodeC2, nodeR] MsgRequestBlock (MsgId 500)
         -- Edge nodes can never send to core nodes
-        sendTo Asynchronous (nodeEs !! 0) [nodeC1] MsgRequestData (MsgId 501)
+        sendTo Asynchronous (nodeEs !! 0) [nodeC1] MsgRequestBlock (MsgId 501)
 
       logNotice "End of demo"
 
@@ -192,7 +192,7 @@ nodeForwardListener node = forever $ do
       logDebug $ discarded msgObj
     else do
       logNotice $ received msgObj
-      unless (msgType msgData == MsgRequestData) $
+      unless (msgType msgData == MsgRequestBlock) $
         OutQ.enqueue (nodeOutQ node)
                      (msgType msgData)
                      msgObj
