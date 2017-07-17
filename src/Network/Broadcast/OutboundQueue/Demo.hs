@@ -193,11 +193,11 @@ nodeForwardListener node = forever $ do
     else do
       logNotice $ received msgObj
       unless (msgType msgData == MsgRequestBlock) $ void $
-        OutQ.enqueueSync' (nodeOutQ node)
-                          (msgType msgData)
-                          msgObj
-                          (OutQ.OriginForward (msgSender msgData))
-                          mempty
+        OutQ.enqueue (nodeOutQ node)
+                     (msgType msgData)
+                     msgObj
+                     (OutQ.OriginForward (msgSender msgData))
+                     mempty
   where
     received, discarded :: MsgObj -> Text
     received  = sformat (shown % ": received "  % formatMsg) (nodeId node)
