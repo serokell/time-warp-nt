@@ -77,8 +77,9 @@ import qualified Network.Transport.Abstract as NT
 import           Node.Internal              (ChannelIn, ChannelOut)
 import qualified Node.Internal              as LL
 import           Node.Message.Class         (Serializable (..), MessageName,
-                                             Message (..), messageName')
-import           Node.Message.Decoder       (Decoder (..), continueDecoding)
+                                             Message (..), messageName',
+                                             Packing, pack, unpack)
+import           Node.Message.Decoder       (Decoder (..), DecoderStep (..), continueDecoding)
 import           System.Random              (StdGen)
 import           System.Wlog                (WithLogger, logDebug, logError, logInfo)
 
@@ -201,7 +202,7 @@ nodeSendActions
        , Serializable packing peerData
        , Serializable packing MessageName )
     => LL.Node packing peerData m
-    -> packing
+    -> Packing packing m
     -> SendActions packing peerData m
 nodeSendActions nodeUnit packing =
     SendActions nodeWithConnectionTo
@@ -220,7 +221,7 @@ nodeSendActions nodeUnit packing =
                 let msgName = messageName (Proxy :: Proxy snd)
                     cactions :: ConversationActions snd rcv m
                     cactions = nodeConversationActions nodeUnit nodeId packing inchan outchan
-                LL.writeMany mtu outchan (packMsg packing msgName)
+                pack packing msgName >>= LL.writeMany mtu outchan
                 converse cactions
 
 -- | Conversation actions for a given peer and in/out channels.
@@ -233,7 +234,7 @@ nodeConversationActions
        )
     => LL.Node packing peerData m
     -> LL.NodeId
-    -> packing
+    -> Packing packing m
     -> ChannelIn m
     -> ChannelOut m
     -> ConversationActions snd rcv m
@@ -243,8 +244,8 @@ nodeConversationActions node _ packing inchan outchan =
 
     mtu = LL.nodeMtu (LL.nodeEnvironment node)
 
-    nodeSend = \body -> do
-        LL.writeMany mtu outchan (packMsg packing body)
+    nodeSend = \body ->
+        pack packing body >>= LL.writeMany mtu outchan
 
     nodeRecv :: Word32 -> m (Maybe rcv)
     nodeRecv limit = do
@@ -295,7 +296,7 @@ node
     -> (m (LL.Statistics m) -> LL.ReceiveDelay m)
     -> (m (LL.Statistics m) -> LL.ReceiveDelay m)
     -> StdGen
-    -> packing
+    -> Packing packing m
     -> peerData
     -> LL.NodeEnvironment m
     -> (Node m -> NodeAction packing peerData m t)
@@ -375,7 +376,7 @@ recvNext
        , Mockable Throw m
        , Serializable packing thing
        )
-    => packing
+    => Packing packing m
     -> Int
     -> ChannelIn m
     -> m (Input thing)
@@ -392,11 +393,12 @@ recvNext packing limit (LL.ChannelIn channel) = do
             -- some limited number of bytes, so 'go' may bring in at most this
             -- many more than the limit.
             let limit' = limit - BS.length bs
-            (trailing, outcome) <- go limit' (continueDecoding (unpackMsg packing) bs)
+            decoderStep <- runDecoder (unpack packing)
+            (trailing, outcome) <- continueDecoding decoderStep bs >>= go limit'
             unless (BS.null trailing) (Channel.unGetChannel channel (Just trailing))
             return outcome
   where
-    go remaining decoder = case decoder of
+    go remaining decoderStep = case decoderStep of
         -- TODO use the error message in the exception.
         Fail _ _ _ -> throw NoParse
         Done trailing _ thing -> return (trailing, Input thing)
@@ -404,7 +406,7 @@ recvNext packing limit (LL.ChannelIn channel) = do
             when (remaining <= 0) (throw LimitExceeded)
             mbs <- Channel.readChannel channel
             case mbs of
-                Nothing -> go remaining (next Nothing)
+                Nothing -> runDecoder (next Nothing) >>= go remaining
                 Just bs ->
                     let !remaining' = remaining - BS.length bs
-                    in  go remaining' (next (Just bs))
+                    in  runDecoder (next (Just bs)) >>= go remaining'
