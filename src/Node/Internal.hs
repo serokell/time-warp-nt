@@ -963,7 +963,7 @@ nodeDispatcher node handlerInOut =
                 Nothing -> do
                     let decoder :: Decoder peerData
                         decoder = unpackMsg (nodePackingType node)
-                    case continueDecoding decoder chunks of
+                    case continueDecoding decoder (BS.concat chunks) of
                         Fail _ _ err -> do
                             logWarning $ sformat ("failed to decode peer data from " % shown % ": got error " % shown) peer err
                             return $ state {
