@@ -46,7 +46,6 @@ import           System.Wlog          (LoggerConfig (..), Severity (..), WithLog
                                        zoomLogger)
 
 import           Mockable.CurrentTime (realTime)
-import           Node                 (Message (..))
 
 -- * Transfered data types
 
@@ -60,16 +59,8 @@ data Payload = Payload
 data Ping = Ping MsgId Payload
     deriving (Generic, Data, Binary)
 
-instance Message Ping where
-    messageCode _ = 0
-    formatMessage _ = "Ping"
-
 data Pong = Pong MsgId Payload
     deriving (Generic, Data, Binary)
-
-instance Message Pong where
-    messageCode _ = 1
-    formatMessage _ = "Pong"
 
 instance Binary Payload where
     get = Payload . BL.length <$> get

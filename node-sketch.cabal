@@ -186,6 +186,7 @@ executable bench-receiver
   main-is:             Main.hs
   other-modules:       ReceiverOptions
   build-depends:       base == 4.*
+                     , containers
                      , log-warper
                      , network-transport-tcp
                      , node-sketch

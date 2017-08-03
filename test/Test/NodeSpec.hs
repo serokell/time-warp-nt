@@ -18,6 +18,7 @@ import           Control.Concurrent.STM.TVar (TVar, newTVarIO)
 import           Control.Lens                (sans, (%=), (&~), (.=))
 import           Control.Exception           (AsyncException(..))
 import           Data.Foldable               (for_)
+import qualified Data.Map                    as M
 import qualified Data.Set                    as S
 import           Data.Time.Units             (Microsecond)
 import           Test.Hspec                  (Spec, describe, runIO, afterAll_)
@@ -83,7 +84,10 @@ spec = describe "Node" $ modifyMaxSuccess (const 50) $ do
                 serverFinished <- newSharedExclusive
                 let attempts = 1
 
-                let listener = Listener $ \pd _ cactions -> do
+                let conversationId :: ConversationId
+                    conversationId = 0
+                    
+                    listener = \pd _ cactions -> do
                         True <- return $ pd == ("client", 24)
                         initial <- timeout "server waiting for request" 30000000 (recv cactions maxBound)
                         case initial of
@@ -92,16 +96,18 @@ spec = describe "Node" $ modifyMaxSuccess (const 50) $ do
                                 _ <- timeout "server sending response" 30000000 (send cactions (Parcel i (Payload 32)))
                                 return ()
 
+                    listenerIndex = M.fromList [(conversationId, listener)]
+
                 let server = node (simpleNodeEndPoint transport) (const noReceiveDelay) (const noReceiveDelay) serverGen binaryPacking ("server" :: String, 42 :: Int) nodeEnv $ \_node ->
-                        NodeAction (const [listener]) $ \converse -> do
+                        NodeAction (const listenerIndex) $ \converse -> do
                             putSharedExclusive serverAddressVar (nodeId _node)
                             takeSharedExclusive clientFinished
                             putSharedExclusive serverFinished ()
 
                 let client = node (simpleNodeEndPoint transport) (const noReceiveDelay) (const noReceiveDelay) clientGen binaryPacking ("client" :: String, 24 :: Int) nodeEnv $ \_node ->
-                        NodeAction (const [listener]) $ \converse -> do
+                        NodeAction (const listenerIndex) $ \converse -> do
                             serverAddress <- readSharedExclusive serverAddressVar
-                            forM_ [1..attempts] $ \i -> converseWith converse serverAddress $ \peerData -> Conversation $ \cactions -> do
+                            forM_ [1..attempts] $ \i -> converseWith converse serverAddress $ \peerData -> Conversation conversationId $ \cactions -> do
                                 True <- return $ peerData == ("server", 42)
                                 _ <- timeout "client sending" 30000000 (send cactions (Parcel i (Payload 32)))
                                 response <- timeout "client waiting for response" 30000000 (recv cactions maxBound)
@@ -128,7 +134,10 @@ spec = describe "Node" $ modifyMaxSuccess (const 50) $ do
                 -- of attempts without taking too much time.
                 let attempts = 100
 
-                let listener = Listener $ \pd _ cactions -> do
+                let conversationId :: ConversationId
+                    conversationId = 0
+                    
+                    listener = \pd _ cactions -> do
                         True <- return $ pd == ("some string", 42)
                         initial <- recv cactions maxBound
                         case initial of
@@ -137,9 +146,11 @@ spec = describe "Node" $ modifyMaxSuccess (const 50) $ do
                                 _ <- send cactions (Parcel i (Payload 32))
                                 return ()
 
+                    listenerIndex = M.fromList [(conversationId, listener)]
+
                 node (simpleNodeEndPoint transport) (const noReceiveDelay) (const noReceiveDelay) gen binaryPacking ("some string" :: String, 42 :: Int) nodeEnv $ \_node ->
-                    NodeAction (const [listener]) $ \converse -> do
-                        forM_ [1..attempts] $ \i -> converseWith converse (nodeId _node) $ \peerData -> Conversation $ \cactions -> do
+                    NodeAction (const listenerIndex) $ \converse -> do
+                        forM_ [1..attempts] $ \i -> converseWith converse (nodeId _node) $ \peerData -> Conversation conversationId $ \cactions -> do
                             True <- return $ peerData == ("some string", 42)
                             _ <- send cactions (Parcel i (Payload 32))
                             response <- recv cactions maxBound
@@ -172,9 +183,9 @@ spec = describe "Node" $ modifyMaxSuccess (const 50) $ do
                             --liftIO . putStrLn $ "Thread killed successfully!"
                             return ()
                     node (simpleNodeEndPoint transport) (const noReceiveDelay) (const noReceiveDelay) gen binaryPacking () env $ \_node ->
-                        NodeAction (const []) $ \converse -> do
+                        NodeAction (const mempty) $ \converse -> do
                             timeout "client waiting for ACK" 5000000 $
-                                flip catch handleThreadKilled $ converseWith converse peerAddr $ \peerData -> Conversation $ \cactions -> do
+                                flip catch handleThreadKilled $ converseWith converse peerAddr $ \peerData -> Conversation 0 $ \cactions -> do
                                     _ :: Maybe Parcel <- recv cactions maxBound
                                     send cactions (Parcel 0 (Payload 32))
                                     return ()
@@ -204,13 +215,16 @@ plainDeliveryTest transport_ nodeEnv neparcels = ioProperty $ do
     let parcels = getNonEmpty neparcels
     testState <- prepareDeliveryTestState parcels
 
-    let worker peerId converse = newWork testState "client" $
-            sendAll converse peerId parcels
+    let conversationId :: ConversationId
+        conversationId = 0
+        
+        worker peerId converse = newWork testState "client" $
+            sendAll conversationId converse peerId parcels
 
         listener = receiveAll $
             \parcel -> modifyTestState testState $ expected %= sans parcel
 
-    deliveryTest transport_ nodeEnv testState [worker] [listener]
+    deliveryTest transport_ nodeEnv testState [worker] (M.fromList [(conversationId, listener)])
 
 withHeavyParcels :: (NonEmptyList Parcel -> Property) -> NonEmptyList HeavyParcel -> Property
 withHeavyParcels testCase (NonEmpty megaParcels) = testCase (NonEmpty (getHeavyParcel <$> megaParcels))

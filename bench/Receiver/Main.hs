@@ -8,6 +8,7 @@ module Main where
 
 import           Control.Applicative        (empty)
 import           Control.Monad              (unless)
+import qualified Data.Map                   as M
 
 import           Data.Time.Units            (Second)
 import           GHC.IO.Encoding            (setLocaleEncoding, utf8)
@@ -22,7 +23,7 @@ import           Bench.Network.Commons      (MeasureEvent (..), Ping (..), Pong 
                                              loadLogConfig, logMeasure)
 import qualified Network.Transport.TCP      as TCP
 import           Network.Transport.Concrete (concrete)
-import           Node                       (Listener (..), NodeAction (..), node,
+import           Node                       (NodeAction (..), node,
                                              defaultNodeEnvironment, ConversationActions (..),
                                              simpleNodeEndPoint, noReceiveDelay)
 import           Node.Message.Binary        (binaryPacking)
@@ -49,13 +50,12 @@ main = do
 
     runProduction $ usingLoggerName "receiver" $ do
         node (simpleNodeEndPoint transport) (const noReceiveDelay) (const noReceiveDelay) prng binaryPacking () defaultNodeEnvironment $ \_ ->
-            NodeAction (const [pingListener noPong]) $ \_ -> do
+            NodeAction (const (M.fromList [(0, pingListener noPong)])) $ \_ -> do
                 threadDelay (fromIntegral duration :: Second)
   where
-    pingListener noPong =
-        Listener $ \_ _ cactions -> do
-            Just (Ping mid payload) <- recv cactions maxBound
-            logMeasure PingReceived mid payload
-            unless noPong $ do
-                logMeasure PongSent mid payload
-                send cactions (Pong mid payload)
+    pingListener noPong = \_ _ cactions -> do
+        Just (Ping mid payload) <- recv cactions maxBound
+        logMeasure PingReceived mid payload
+        unless noPong $ do
+            logMeasure PongSent mid payload
+            send cactions (Pong mid payload)

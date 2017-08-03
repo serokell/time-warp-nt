@@ -16,9 +16,9 @@ import           Control.Monad.IO.Class               (liftIO)
 import           Data.Binary
 import qualified Data.ByteString                      as BS
 import qualified Data.ByteString.Char8                as B8
+import qualified Data.Map                             as M
 import qualified Data.Set                             as S
 import           Data.Time.Units                      (Microsecond, fromMicroseconds)
-import           Data.Void                            (Void, absurd)
 import           GHC.Generics                         (Generic)
 import           Mockable.Concurrent                  (ThreadId, delay, fork, killThread)
 import           Mockable.Exception                   (finally)
@@ -40,9 +40,8 @@ instance Binary Pong where
 
 type Packing = BinaryP
 
-instance Message Void where
-    messageCode _ = 0
-    formatMessage = absurd
+pingPongConversationId :: ConversationId
+pingPongConversationId = 0
 
 worker
     :: NodeId
@@ -67,7 +66,7 @@ worker anId generator discovery = pingWorker generator
             peerSet <- knownPeers discovery
             liftIO . putStrLn $ show anId ++ " has peer set: " ++ show peerSet
             forM_ (S.toList peerSet) $ \addr -> converseWith converse (NodeId addr) $
-                \_peerData -> Conversation $ \(cactions :: ConversationActions Void Pong Production) -> do
+                \_peerData -> Conversation pingPongConversationId $ \(cactions :: ConversationActions BinaryP Production) -> do
                     received <- recv cactions maxBound
                     case received of
                         Just (Pong _) -> liftIO . putStrLn $ show anId ++ " heard PONG from " ++ show addr
@@ -77,11 +76,11 @@ worker anId generator discovery = pingWorker generator
 listeners
     :: NodeId
     -> BS.ByteString
-    -> [Listener Packing BS.ByteString Production]
-listeners anId peerData = [pongListener]
+    -> ListenerIndex Packing BS.ByteString Production
+listeners anId peerData = M.fromList [(pingPongConversationId, pongListener)]
     where
     pongListener :: Listener Packing BS.ByteString Production
-    pongListener = Listener $ \_ peerId (cactions :: ConversationActions Pong Void Production) -> do
+    pongListener = \_ peerId (cactions :: ConversationActions BinaryP Production) -> do
         liftIO . putStrLn $ show anId ++  " heard PING from " ++ show peerId ++ " with peer data " ++ B8.unpack peerData
         send cactions (Pong "")
 

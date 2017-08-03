@@ -18,39 +18,11 @@ module Node.Message.Class
     , pack
     , unpack
 
-    , Message (..)
-    , messageCode'
-
-    , MessageCode
     ) where
 
 import qualified Data.ByteString.Lazy          as LBS
 import           Data.Proxy                    (Proxy (..))
-import qualified Data.Text                     as T
-import           Data.Word                     (Word16)
-import qualified Formatting                    as F
 import           Node.Message.Decoder          (Decoder, hoistDecoder)
-
--- * Message name
-
-type MessageCode = Word16
-
--- | Defines type with it's own `MessageCode`.
-class Message m where
-    -- | Uniquely identifies this type
-    messageCode :: Proxy m -> MessageCode
-
-    -- | Description of message, for debug purposes
-    formatMessage :: m -> T.Text
-    default formatMessage :: F.Buildable m => m -> T.Text
-    formatMessage = F.sformat F.build
-
--- | As `messageName`, but accepts message itself, may be more convinient is most cases.
-messageCode' :: Message m => m -> MessageCode
-messageCode' = messageCode . proxyOf
-  where
-    proxyOf :: a -> Proxy a
-    proxyOf _ = Proxy
 
 class PackingType packingType where
     type PackM packingType :: * -> *

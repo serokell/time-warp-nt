@@ -75,13 +75,13 @@ import           Test.QuickCheck.Modifiers   (getLarge)
 import           Test.QuickCheck.Property    (Testable (..), failed, reason, succeeded)
 
 import           Node                        (ConversationActions (..),
-                                              Listener (..), Message (..),
+                                              Listener, ListenerIndex,
                                               NodeAction (..), NodeId, Conversation (..),
                                               node, nodeId, defaultNodeEnvironment,
                                               simpleNodeEndPoint, Conversation (..),
                                               noReceiveDelay, NodeEnvironment,
                                               converseWith)
-import           Node.Conversation           (Converse)
+import           Node.Conversation           (Converse, ConversationId)
 import           Node.Message.Binary         (BinaryP, binaryPacking)
 
 -- | Run a computation, but kill it if it takes more than a given number of
@@ -128,9 +128,6 @@ data Parcel = Parcel
     } deriving (Eq, Ord, Show, Generic)
 
 instance Binary Parcel
-instance Message Parcel where
-    messageCode _ = 0
-    formatMessage _ = "Parcel"
 
 instance Arbitrary Parcel where
     arbitrary = Parcel
@@ -210,7 +207,8 @@ awaitSTM time predicate = do
         check =<< (||) <$> predicate <*> readTVar tvar
 
 sendAll
-    :: ( Binary msg, Message msg, MonadIO m
+    :: ( Binary msg
+       , MonadIO m
        , Mockable Concurrently m
        , Mockable Delay m
        , Mockable Async m
@@ -218,21 +216,23 @@ sendAll
        , Mockable Catch m
        , Mockable SharedExclusive m
        )
-    => Converse BinaryP () m
+    => ConversationId
+    -> Converse BinaryP () m
     -> NodeId
     -> [msg]
     -> m ()
-sendAll converse peerId msgs =
+sendAll cid converse peerId msgs =
     timeout "sendAll" 30000000 $
         void . converseWith converse peerId $
-            \peerData -> Conversation $ \cactions -> forM_ msgs $
+            \peerData -> Conversation cid $ \cactions -> forM_ msgs $
                 \msg -> do
                     send cactions msg
                     (_ :: Maybe Bool) <- recv cactions maxBound
                     pure ()
 
 receiveAll
-    :: ( Binary msg, Message msg, MonadIO m
+    :: ( Binary msg
+       , MonadIO m
        , Mockable Delay m
        , Mockable Async m
        , Mockable SharedExclusive m
@@ -241,19 +241,15 @@ receiveAll
        )
     => (msg -> m ())
     -> Listener BinaryP () m
--- For conversation style, we send a response for every message received.
--- The sender awaits a response for each message. This ensures that the
--- sender doesn't finish before the conversation SYN/ACK completes.
-receiveAll handler =
-    Listener @_ @_ @_ @Bool $ \_ _ cactions ->
-        let loop = do mmsg <- recv cactions maxBound
-                      case mmsg of
-                          Nothing -> pure ()
-                          Just msg -> do
-                              handler msg
-                              send cactions True
-                              loop
-        in  timeout "receiveAll" 30000000 loop
+receiveAll handler = \_ _ cactions ->
+    let loop = do mmsg <- recv cactions maxBound
+                  case mmsg of
+                      Nothing -> pure ()
+                      Just msg -> do
+                          handler msg
+                          send cactions True
+                          loop
+    in  timeout "receiveAll" 30000000 loop
 
 makeInMemoryTransport :: IO NT.Transport
 makeInMemoryTransport = InMemory.createTransport
@@ -284,7 +280,7 @@ deliveryTest :: NT.Transport
              -> NodeEnvironment Production
              -> TVar TestState
              -> [NodeId -> Converse BinaryP () Production -> Production ()]
-             -> [Listener BinaryP () Production]
+             -> ListenerIndex BinaryP () Production
              -> IO Property
 deliveryTest transport_ nodeEnv testState workers listeners = runProduction $ do
 
@@ -309,7 +305,7 @@ deliveryTest transport_ nodeEnv testState workers listeners = runProduction $ do
                 putSharedExclusive serverFinished ()
 
     let client = node (simpleNodeEndPoint transport) (const noReceiveDelay) (const noReceiveDelay) prng2 binaryPacking () nodeEnv $ \clientNode ->
-            NodeAction (const []) $ \converse -> do
+            NodeAction (const mempty) $ \converse -> do
                 serverAddress <- takeSharedExclusive serverAddressVar
                 let act = void . forConcurrently workers $ \worker ->
                         worker serverAddress converse

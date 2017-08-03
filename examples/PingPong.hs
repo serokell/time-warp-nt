@@ -18,6 +18,7 @@ import           Data.Binary                (Binary)
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Char8      as B8
 import           Data.Data                  (Data)
+import qualified Data.Map                   as M
 import           Data.Time.Units            (Microsecond, fromMicroseconds)
 import           GHC.Generics               (Generic)
 import           Mockable.Concurrent        (delay, fork, killThread, forConcurrently)
@@ -31,14 +32,11 @@ import           Node.Util.Monitor          (startMonitor)
 import           System.Random
 
 -- | Type for messages from the workers to the listeners.
-data Ping = Ping
+data Ping = Ping BS.ByteString
 deriving instance Generic Ping
 deriving instance Data Ping
 deriving instance Show Ping
 instance Binary Ping
-instance Message Ping where
-    messageCode _ = 0
-    formatMessage _ = "Ping"
 
 -- | Type for messages from the listeners to the workers.
 data Pong = Pong BS.ByteString
@@ -47,6 +45,9 @@ deriving instance Show Pong
 instance Binary Pong
 
 type Packing = BinaryP
+
+pingPongConversationId :: ConversationId
+pingPongConversationId = 0
 
 worker
     :: NodeId
@@ -67,27 +68,29 @@ worker anId generator peerIds = pingWorker generator
             let (i, gen') = randomR (0,1000000) g
                 us = fromMicroseconds i :: Microsecond
             delay us
-            let pong :: NodeId -> ConversationActions Ping Pong Production -> Production ()
+            let pong :: NodeId -> ConversationActions BinaryP Production -> Production ()
                 pong peerId cactions = do
+                    _ <- send cactions (Ping "hello")
                     liftIO . putStrLn $ show anId ++ " sent PING to " ++ show peerId
                     received <- recv cactions maxBound
                     case received of
                         Just (Pong _) -> liftIO . putStrLn $ show anId ++ " heard PONG from " ++ show peerId
                         Nothing -> error "Unexpected end of input"
             _ <- forConcurrently peerIds $ \peerId ->
-                converseWith converse peerId (\_ -> Conversation (pong peerId))
+                converseWith converse peerId (\_ -> Conversation pingPongConversationId (pong peerId))
             loop gen'
 
 listeners
     :: NodeId
     -> BS.ByteString
-    -> [Listener Packing BS.ByteString Production]
-listeners anId peerData = [pongListener]
+    -> ListenerIndex Packing BS.ByteString Production
+listeners anId peerData = M.fromList [(pingPongConversationId, pongListener)]
     where
     pongListener :: Listener Packing BS.ByteString Production
-    pongListener = Listener $ \_ peerId (cactions :: ConversationActions Pong Ping Production) -> do
+    pongListener = \_ peerId (cactions :: ConversationActions BinaryP Production) -> do
+        Just (Ping _) <- recv cactions maxBound
         liftIO . putStrLn $ show anId ++  " heard PING from " ++ show peerId ++ " with peer data " ++ B8.unpack peerData
-        send cactions (Pong "")
+        send cactions (Pong "goodbye")
         liftIO . putStrLn $ show anId ++ " sent PONG to " ++ show peerId
 
 main :: IO ()

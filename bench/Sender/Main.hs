@@ -83,7 +83,7 @@ main = do
                                      (zip [0, msgNum..] nodeIds)
 
             node (simpleNodeEndPoint transport) (const noReceiveDelay) (const noReceiveDelay) prngNode binaryPacking () defaultNodeEnvironment $ \node' ->
-                NodeAction (const []) $ \converse -> do
+                NodeAction (const mempty) $ \converse -> do
                     drones <- forM nodeIds (startDrone node')
                     _ <- forM pingWorkers (fork . flip ($) converse)
                     delay (fromIntegral duration :: Second)
@@ -100,7 +100,7 @@ main = do
             -- TODO: better to use `connect` + `send`,
             -- but `connect` is not implemented yet
             lift . lift $ converseWith converse peerId $
-                \_ -> Conversation $ \cactions -> do
+                \_ -> Conversation 0 $ \cactions -> do
                     send cactions (Ping sMsgId payload)
                     Just (Pong _ _) <- recv cactions maxBound
                     return ()
