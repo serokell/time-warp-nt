@@ -11,6 +11,11 @@ flag benchmarks
   default:           False
   manual:            True
 
+flag qdisc
+  description:       Build 'qdisc' executable
+  default:           False
+  manual:            True
+
 Library
   exposed-modules:      Network.Discovery.Abstract
                         Network.Discovery.Transport.Kademlia
@@ -270,27 +275,28 @@ test-suite node-sketch-test
                      , DeriveDataTypeable
                      , GeneralizedNewtypeDeriving
 
-executable qdisc-simulation
+benchmark qdisc-simulation
   -- TBD: make this a benchmark instead?
-  -- type:           exitcode-stdio-1.0
+  type:           exitcode-stdio-1.0
   hs-source-dirs: src
   main-is:        Network/QDisc/Simulation.hs
   other-modules:  Network.QDisc.Fair
-  build-depends:    base
-                  , async
-                  , criterion
-                  , network-transport-tcp
-                  , bytestring
-                  , binary
-                  , network-transport
-                  , time-units
-                  , containers
-                  , stm
-                  , random
-                  , mwc-random
-                  , statistics
-                  , vector
-                  , time
+  if flag(qdisc)
+   build-depends:    base
+                   , async
+                   , criterion
+                   , network-transport-tcp
+                   , bytestring
+                   , binary
+                   , network-transport
+                   , time-units
+                   , containers
+                   , stm
+                   , random
+                   , mwc-random
+                   , statistics
+                   , vector
+                   , time
   default-language: Haskell2010
   ghc-options:    -O3
                   -threaded
