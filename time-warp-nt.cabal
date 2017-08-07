@@ -1,5 +1,5 @@
-name:                node-sketch
-version:             0.2.0.0
+name:                time-warp-nt
+version:             0.3.0.0
 license:             MIT
 license-file:        LICENSE
 category:            Network
@@ -122,7 +122,7 @@ executable discovery
                       , bytestring
                       , containers
                       , network-transport-tcp
-                      , node-sketch
+                      , time-warp-nt
                       , random
                       , time-units
 
@@ -142,7 +142,7 @@ executable ping-pong
                      , bytestring
                      , containers
                      , network-transport-tcp
-                     , node-sketch
+                     , time-warp-nt
                      , random
                      , stm
                      , time-units
@@ -165,7 +165,7 @@ executable bench-sender
                      , MonadRandom
                      , mtl
                      , network-transport-tcp
-                     , node-sketch
+                     , time-warp-nt
                      , optparse-simple >= 0.0.3
                      , random
                      , serokell-util
@@ -188,7 +188,7 @@ executable bench-receiver
   build-depends:       base == 4.*
                      , log-warper
                      , network-transport-tcp
-                     , node-sketch
+                     , time-warp-nt
                      , optparse-simple
                      , random
                      , serokell-util
@@ -218,7 +218,7 @@ executable bench-log-reader
                      , lens
                      , log-warper
                      , mtl
-                     , node-sketch
+                     , time-warp-nt
                      , optparse-simple
                      , resourcet
                      , text
@@ -235,7 +235,7 @@ executable bench-log-reader
                      , DeriveDataTypeable
                      , GeneralizedNewtypeDeriving
 
-test-suite node-sketch-test
+test-suite time-warp-nt-test
   main-is:             Test.hs
   other-modules:       Spec
                        Test.NodeSpec
@@ -251,7 +251,7 @@ test-suite node-sketch-test
                      , network-transport
                      , network-transport-tcp
                      , network-transport-inmemory
-                     , node-sketch
+                     , time-warp-nt
                      , QuickCheck
                      , quickcheck-instances
                      , random
