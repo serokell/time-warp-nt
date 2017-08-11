@@ -140,7 +140,7 @@ enumPrecHighestFirst = reverse enumPrecLowestFirst
 --
 -- If we cannot find any alternative that doesn't match requirements we simply
 -- give up on forwarding set.
-data MaxAhead = MaxAhead Int | UnlimitedMaxAhead
+data MaxAhead = MaxAhead Int
   deriving Show
 
 -- | Enqueueing instruction
@@ -198,7 +198,7 @@ defaultEnqueuePolicyCore = go
       ]
     go (MsgRequestBlocks _) = [
         -- We never ask for data from edge nodes
-        EnqueueOne [NodeRelay, NodeCore] UnlimitedMaxAhead PHigh
+        EnqueueOne [NodeRelay, NodeCore] (MaxAhead 1) PHigh
       ]
     go (MsgMPC _) = [
         EnqueueAll NodeCore (MaxAhead 1) PMedium
@@ -257,7 +257,7 @@ defaultEnqueuePolicyEdgeBehindNat = go
       ]
     go (MsgRequestBlocks _) = [
         -- Edge nodes can only talk to relay nodes
-        EnqueueOne [NodeRelay] UnlimitedMaxAhead PHigh
+        EnqueueOne [NodeRelay] (MaxAhead 0) PHigh
       ]
     go (MsgMPC _) = [
         -- not relevant
@@ -283,7 +283,7 @@ defaultEnqueuePolicyEdgeExchange = go
       ]
     go (MsgRequestBlocks _) = [
         -- Edge nodes can only talk to relay nodes
-        EnqueueOne [NodeRelay] UnlimitedMaxAhead PHigh
+        EnqueueOne [NodeRelay] (MaxAhead 0) PHigh
       ]
     go (MsgMPC _) = [
         -- not relevant
