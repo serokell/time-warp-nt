@@ -353,7 +353,7 @@ defaultDequeuePolicyCore = go
   where
     go :: DequeuePolicy
     go NodeCore  = Dequeue NoRateLimiting (MaxInFlight 3)
-    go NodeRelay = Dequeue NoRateLimiting (MaxInFlight 1)
+    go NodeRelay = Dequeue NoRateLimiting (MaxInFlight 2)
     go NodeEdge  = error "defaultDequeuePolicy: core to edge not applicable"
 
 -- | Dequeueing policy for relay nodes
@@ -361,9 +361,9 @@ defaultDequeuePolicyRelay :: DequeuePolicy
 defaultDequeuePolicyRelay = go
   where
     go :: DequeuePolicy
-    go NodeCore  = Dequeue (MaxMsgPerSec 1) (MaxInFlight 1)
+    go NodeCore  = Dequeue (MaxMsgPerSec 1) (MaxInFlight 2)
     go NodeRelay = Dequeue (MaxMsgPerSec 3) (MaxInFlight 2)
-    go NodeEdge  = Dequeue (MaxMsgPerSec 1) (MaxInFlight 1)
+    go NodeEdge  = Dequeue (MaxMsgPerSec 1) (MaxInFlight 2)
 
 -- | Dequeueing policy for standard behind-NAT edge nodes
 defaultDequeuePolicyEdgeBehindNat :: DequeuePolicy
@@ -371,7 +371,7 @@ defaultDequeuePolicyEdgeBehindNat = go
   where
     go :: DequeuePolicy
     go NodeCore  = error "defaultDequeuePolicy: edge to core not applicable"
-    go NodeRelay = Dequeue (MaxMsgPerSec 1) (MaxInFlight 1)
+    go NodeRelay = Dequeue (MaxMsgPerSec 1) (MaxInFlight 2)
     go NodeEdge  = error "defaultDequeuePolicy: edge to edge not applicable"
 
 -- | Dequeueing policy for exchange edge nodes
@@ -389,7 +389,7 @@ defaultDequeuePolicyEdgeP2P = go
   where
     go :: DequeuePolicy
     go NodeCore  = error "defaultDequeuePolicy: edge to core not applicable"
-    go NodeRelay = Dequeue (MaxMsgPerSec 1) (MaxInFlight 1)
+    go NodeRelay = Dequeue (MaxMsgPerSec 1) (MaxInFlight 2)
     go NodeEdge  = error "defaultDequeuePolicy: edge to edge not applicable"
 
 {-------------------------------------------------------------------------------
