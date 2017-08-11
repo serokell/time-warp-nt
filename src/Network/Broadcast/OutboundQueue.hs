@@ -636,10 +636,10 @@ intEnqueue outQ@OutQ{..} msgType msg peers = fmap concat $
 
         enqueued <- sendAll [] fwdSets
 
-        -- Log an error if we didn't manage to send the message to any peer
+        -- Log an error if we didn't manage to enqueue the message to any peer
         -- at all (provided that we were configured to send it to some)
         if | null fwdSets ->
-               logDebug $ msgNotSent enqNodeType -- This isn't an error
+               logDebug $ msgNotEnqueued enqNodeType -- This isn't an error
            | null enqueued ->
                logError $ msgEnqFailed enq fwdSets
            | otherwise ->
@@ -660,8 +660,12 @@ intEnqueue outQ@OutQ{..} msgType msg peers = fmap concat $
                     . map (sendFwdSet [] enqMaxAhead enqPrecedence)
 
         enqueued <- sendOne fwdSets
-        when (null enqueued) $
-          logError $ msgEnqFailed enq fwdSets
+
+        -- Log an error if we didn't manage to enqueue the message
+        if null enqueued
+          then logError $ msgEnqFailed enq fwdSets
+          else logDebug $ msgEnqueued enqueued
+
         return enqueued
   where
     -- Attempt to send the message to a single forwarding set
@@ -698,12 +702,12 @@ intEnqueue outQ@OutQ{..} msgType msg peers = fmap concat $
         OriginSender    -> id
         OriginForward n -> filter (not . null) . map (filter (/= n))
 
-    msgNotSent :: NodeType -> Text
-    msgNotSent nodeType = sformat
+    msgNotEnqueued :: NodeType -> Text
+    msgNotEnqueued nodeType = sformat
       ( shown
       % ": message "
       % formatMsg
-      % " not sent to any nodes of type "
+      % " not enqueued to any nodes of type "
       % shown
       % " since no such (relevant) peers listed in "
       % shown
