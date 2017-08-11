@@ -183,7 +183,7 @@ defaultEnqueuePolicy NodeCore  = defaultEnqueuePolicyCore
 defaultEnqueuePolicy NodeRelay = defaultEnqueuePolicyRelay
 defaultEnqueuePolicy NodeEdge  = defaultEnqueuePolicyEdgeBehindNat
 
--- | Default enqueue policy for code nodes
+-- | Default enqueue policy for core nodes
 defaultEnqueuePolicyCore :: EnqueuePolicy nid
 defaultEnqueuePolicyCore = go
   where
@@ -196,7 +196,7 @@ defaultEnqueuePolicyCore = go
         EnqueueAll NodeCore  (MaxAhead 1) PHigh
       , EnqueueAll NodeRelay (MaxAhead 1) PHigh
       ]
-    go (MsgRequestBlock _) = [
+    go (MsgRequestBlocks _) = [
         -- We never ask for data from edge nodes
         EnqueueOne [NodeRelay, NodeCore] UnlimitedMaxAhead PHigh
       ]
@@ -224,9 +224,9 @@ defaultEnqueuePolicyRelay = go
         EnqueueAll NodeCore  (MaxAhead 1) PHigh
       , EnqueueAll NodeRelay (MaxAhead 1) PHigh
       ]
-    go (MsgRequestBlock _) = [
-        -- We never ask for data from edge nodes
-        EnqueueOne [NodeRelay, NodeCore] UnlimitedMaxAhead PHigh
+    go (MsgRequestBlocks _) = [
+        -- We never ask for blocks from edge nodes
+        EnqueueOne [NodeRelay, NodeCore] (MaxAhead 1) PHigh
       ]
     go (MsgTransaction _) = [
         EnqueueAll NodeCore  (MaxAhead 20) PLow
@@ -244,7 +244,7 @@ defaultEnqueuePolicyEdgeBehindNat = go
     -- Enqueue policy for edge nodes
     go :: EnqueuePolicy nid
     go (MsgTransaction OriginSender) = [
-        EnqueueAll NodeRelay (MaxAhead 0) PLow
+        EnqueueAll NodeRelay (MaxAhead 1) PLow
       ]
     go (MsgTransaction (OriginForward _)) = [
         -- don't forward transactions that weren't created at this node
@@ -253,9 +253,9 @@ defaultEnqueuePolicyEdgeBehindNat = go
         -- not forwarded
       ]
     go MsgRequestBlockHeaders = [
-        EnqueueAll NodeRelay (MaxAhead 1) PHigh
+        EnqueueAll NodeRelay (MaxAhead 0) PHigh
       ]
-    go (MsgRequestBlock _) = [
+    go (MsgRequestBlocks _) = [
         -- Edge nodes can only talk to relay nodes
         EnqueueOne [NodeRelay] UnlimitedMaxAhead PHigh
       ]
@@ -279,9 +279,9 @@ defaultEnqueuePolicyEdgeExchange = go
         -- not forwarded
       ]
     go MsgRequestBlockHeaders = [
-        EnqueueAll NodeRelay (MaxAhead 1) PHigh
+        EnqueueAll NodeRelay (MaxAhead 0) PHigh
       ]
-    go (MsgRequestBlock _) = [
+    go (MsgRequestBlocks _) = [
         -- Edge nodes can only talk to relay nodes
         EnqueueOne [NodeRelay] UnlimitedMaxAhead PHigh
       ]
@@ -295,11 +295,8 @@ defaultEnqueuePolicyEdgeP2P = go
   where
     -- Enqueue policy for edge nodes
     go :: EnqueuePolicy nid
-    go (MsgTransaction OriginSender) = [
+    go (MsgTransaction _) = [
         EnqueueAll NodeRelay (MaxAhead 3) PLow
-      ]
-    go (MsgTransaction (OriginForward _)) = [
-        -- don't forward transactions that weren't created at this node
       ]
     go (MsgAnnounceBlockHeader _) = [
         EnqueueAll NodeRelay (MaxAhead 0) PHighest
@@ -307,9 +304,9 @@ defaultEnqueuePolicyEdgeP2P = go
     go MsgRequestBlockHeaders = [
         EnqueueAll NodeRelay (MaxAhead 1) PHigh
       ]
-    go (MsgRequestBlock _) = [
+    go (MsgRequestBlocks _) = [
         -- Edge nodes can only talk to relay nodes
-        EnqueueOne [NodeRelay] UnlimitedMaxAhead PHigh
+        EnqueueOne [NodeRelay] (MaxAhead 1) PHigh
       ]
     go (MsgMPC _) = [
         -- not relevant
