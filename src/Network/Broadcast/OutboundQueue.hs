@@ -83,8 +83,10 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Data.Either (rights)
 import Data.Foldable (fold)
-import Data.Maybe (maybeToList)
+import Data.List (sortBy)
 import Data.Map.Strict (Map)
+import Data.Maybe (maybeToList)
+import Data.Ord (comparing)
 import Data.Text (Text)
 import Data.Time
 import Data.Typeable (typeOf)
@@ -138,7 +140,7 @@ enumPrecHighestFirst = reverse enumPrecLowestFirst
 --
 -- If we cannot find any alternative that doesn't match requirements we simply
 -- give up on forwarding set.
-newtype MaxAhead = MaxAhead Int
+data MaxAhead = MaxAhead Int | UnlimitedMaxAhead
   deriving Show
 
 -- | Enqueueing instruction
@@ -196,7 +198,7 @@ defaultEnqueuePolicyCore = go
       ]
     go (MsgRequestBlock _) = [
         -- We never ask for data from edge nodes
-        EnqueueOne [NodeRelay, NodeCore] (MaxAhead 1) PHigh
+        EnqueueOne [NodeRelay, NodeCore] UnlimitedMaxAhead PHigh
       ]
     go (MsgMPC _) = [
         EnqueueAll NodeCore (MaxAhead 1) PMedium
@@ -224,7 +226,7 @@ defaultEnqueuePolicyRelay = go
       ]
     go (MsgRequestBlock _) = [
         -- We never ask for data from edge nodes
-        EnqueueOne [NodeRelay, NodeCore] (MaxAhead 1) PHigh
+        EnqueueOne [NodeRelay, NodeCore] UnlimitedMaxAhead PHigh
       ]
     go (MsgTransaction _) = [
         EnqueueAll NodeCore  (MaxAhead 20) PLow
@@ -242,7 +244,7 @@ defaultEnqueuePolicyEdgeBehindNat = go
     -- Enqueue policy for edge nodes
     go :: EnqueuePolicy nid
     go (MsgTransaction OriginSender) = [
-        EnqueueAll NodeRelay (MaxAhead 0) PHighest
+        EnqueueAll NodeRelay (MaxAhead 0) PLow
       ]
     go (MsgTransaction (OriginForward _)) = [
         -- don't forward transactions that weren't created at this node
@@ -251,7 +253,7 @@ defaultEnqueuePolicyEdgeBehindNat = go
         -- not forwarded
       ]
     go MsgRequestBlockHeaders = [
-        EnqueueAll NodeRelay (MaxAhead 1) PHigh
+        EnqueueAll NodeRelay UnlimitedMaxAhead PHigh
       ]
     go (MsgRequestBlock _) = [
         -- Edge nodes can only talk to relay nodes
@@ -268,7 +270,7 @@ defaultEnqueuePolicyEdgeExchange = go
     -- Enqueue policy for edge nodes
     go :: EnqueuePolicy nid
     go (MsgTransaction OriginSender) = [
-        EnqueueAll NodeRelay (MaxAhead 6) PHighest
+        EnqueueAll NodeRelay (MaxAhead 6) PLow
       ]
     go (MsgTransaction (OriginForward _)) = [
         -- don't forward transactions that weren't created at this node
@@ -294,7 +296,7 @@ defaultEnqueuePolicyEdgeP2P = go
     -- Enqueue policy for edge nodes
     go :: EnqueuePolicy nid
     go (MsgTransaction OriginSender) = [
-        EnqueueAll NodeRelay (MaxAhead 3) PHigh
+        EnqueueAll NodeRelay (MaxAhead 3) PLow
       ]
     go (MsgTransaction (OriginForward _)) = [
         -- don't forward transactions that weren't created at this node
@@ -616,7 +618,8 @@ intEnqueue outQ@OutQ{..} msgType msg peers = fmap concat $
 
       enq@EnqueueAll{..} -> do
         let fwdSets :: AllOf (Alts nid)
-            fwdSets = removeOrigin (msgOrigin msgType) $ peers ^. peersOfType enqNodeType
+            fwdSets = removeOrigin (msgOrigin msgType) $
+                        peers ^. peersOfType enqNodeType
 
             sendAll :: [Packet msg nid a]
                     -> AllOf (Alts nid)
@@ -647,7 +650,8 @@ intEnqueue outQ@OutQ{..} msgType msg peers = fmap concat $
       enq@EnqueueOne{..} -> do
         let fwdSets :: [(NodeType, Alts nid)]
             fwdSets = concatMap
-                        (\t -> map (t,) $ removeOrigin (msgOrigin msgType) $ peers ^. peersOfType t)
+                        (\t -> map (t,) $ removeOrigin (msgOrigin msgType) $
+                                            peers ^. peersOfType t)
                         enqNodeTypes
 
             sendOne :: [(NodeType, Alts nid)] -> m [Packet msg nid a]
@@ -728,25 +732,46 @@ intEnqueue outQ@OutQ{..} msgType msg peers = fmap concat $
               )
               qSelf enq msg fwdSets
 
+-- | Node ID with current stats needed to pick a node from a list of alts
+data NodeWithStats nid = NodeWithStats {
+      nstatsId      :: nid  -- ^ Node ID
+    , nstatsFailure :: Bool -- ^ Recent failure?
+    , nstatsAhead   :: Int  -- ^ Number of messages ahead
+    }
+
+-- | Compute current node statistics
+nodeWithStats :: (MonadIO m, WithLogger m)
+              => OutboundQ msg nid buck
+              -> Precedence -- ^ For determining number of messages ahead
+              -> nid
+              -> m (NodeWithStats nid)
+nodeWithStats outQ prec nstatsId = do
+    nstatsAhead   <- countAhead outQ nstatsId prec
+    nstatsFailure <- hasRecentFailure outQ nstatsId
+    return NodeWithStats{..}
+
+-- | Choose an appropriate node from a list of alternatives
+--
+-- All alternatives are assumed to be of the same type; we prefer to pick
+-- nodes with a smaller number of messages ahead.
 pickAlt :: forall m msg nid buck. (MonadIO m, WithLogger m)
         => OutboundQ msg nid buck
         -> MaxAhead
         -> Precedence
-        -> Alts nid
+        -> [nid]
         -> m (Maybe nid)
-pickAlt outQ@OutQ{} (MaxAhead maxAhead) prec alts =
-    orElseM [ do
-        failure <- hasRecentFailure outQ alt
-        ahead   <- countAhead outQ alt prec
-        if | failure -> do
-               logDebug $ msgFailure alt
+pickAlt outQ@OutQ{} maxAhead prec alts = do
+    alts' <- mapM (nodeWithStats outQ prec) alts
+    orElseM [
+        if | nstatsFailure -> do
+               logDebug $ msgFailure nstatsId
                return Nothing
-           | ahead > maxAhead -> do
-               logDebug $ msgAhead alt ahead maxAhead
+           | MaxAhead n <- maxAhead, nstatsAhead > n -> do
+               logDebug $ msgAhead nstatsId nstatsAhead n
                return Nothing
            | otherwise -> do
-               return $ Just alt
-      | alt <- alts
+               return $ Just nstatsId
+      | NodeWithStats{..} <- sortBy (comparing nstatsAhead) alts'
       ]
   where
     msgFailure :: nid -> Text
@@ -759,7 +784,6 @@ pickAlt outQ@OutQ{} (MaxAhead maxAhead) prec alts =
           "Rejected alternative " % shown
         % " as it has " % shown
         % " messages ahead, which is more than the maximum " % shown
-
 
 -- | Check how many messages are currently ahead
 --
