@@ -253,11 +253,11 @@ defaultEnqueuePolicyEdgeBehindNat = go
         -- not forwarded
       ]
     go MsgRequestBlockHeaders = [
-        EnqueueAll NodeRelay UnlimitedMaxAhead PHigh
+        EnqueueAll NodeRelay (MaxAhead 1) PHigh
       ]
     go (MsgRequestBlock _) = [
         -- Edge nodes can only talk to relay nodes
-        EnqueueOne [NodeRelay] (MaxAhead 1) PHigh
+        EnqueueOne [NodeRelay] UnlimitedMaxAhead PHigh
       ]
     go (MsgMPC _) = [
         -- not relevant
@@ -283,7 +283,7 @@ defaultEnqueuePolicyEdgeExchange = go
       ]
     go (MsgRequestBlock _) = [
         -- Edge nodes can only talk to relay nodes
-        EnqueueOne [NodeRelay] (MaxAhead 1) PHigh
+        EnqueueOne [NodeRelay] UnlimitedMaxAhead PHigh
       ]
     go (MsgMPC _) = [
         -- not relevant
@@ -309,7 +309,7 @@ defaultEnqueuePolicyEdgeP2P = go
       ]
     go (MsgRequestBlock _) = [
         -- Edge nodes can only talk to relay nodes
-        EnqueueOne [NodeRelay] (MaxAhead 1) PHigh
+        EnqueueOne [NodeRelay] UnlimitedMaxAhead PHigh
       ]
     go (MsgMPC _) = [
         -- not relevant
