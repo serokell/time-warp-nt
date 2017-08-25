@@ -814,21 +814,27 @@ pickAlt :: forall m msg nid buck. (MonadIO m, WithLogger m)
 pickAlt outQ@OutQ{} (MaxAhead maxAhead) prec alts = do
     alts' <- mapM (nodeWithStats outQ prec) alts
     orElseM [
-        if | nstatsFailure -> do
-               logDebug $ debugFailure nstatsId
-               return Nothing
-           | (nstatsAhead + nstatsInFlight) > maxAhead -> do
+        if | (nstatsAhead + nstatsInFlight) > maxAhead -> do
                logDebug $ debugAhead nstatsId nstatsAhead nstatsInFlight maxAhead
                return Nothing
+           | nstatsFailure -> do
+               logDebug $ debugFailure nstatsId
+               return $ Just nstatsId
            | otherwise -> do
                return $ Just nstatsId
-      | NodeWithStats{..} <- sortBy (comparing ((+) <$> nstatsAhead <*> nstatsInFlight)) alts'
+      | NodeWithStats{..} <- sortBy (comparing (mkAltOrdering <$> nstatsAhead <*> nstatsInFlight <*> nstatsFailure)) alts'
       ]
   where
+    mkAltOrdering :: Int  -- Ahead
+                  -> Int  -- In flight
+                  -> Bool -- Recent failure?
+                  -> AltOrdering
+    mkAltOrdering ahead inFlight hasFailure = (hasFailure, inFlight + ahead)
+
     debugFailure :: nid -> Text
     debugFailure = sformat $
-          "Rejected alternative " % shown
-        % " as it has a recent failure"
+          "Using alternative " % shown
+        % " even though it has a recent failure"
 
     debugAhead :: nid -> Int -> Int -> Int -> Text
     debugAhead = sformat $
@@ -836,6 +842,12 @@ pickAlt outQ@OutQ{} (MaxAhead maxAhead) prec alts = do
         % " as it has " % shown
         % " messages ahead and " %shown
         % " messages in flight, which total more than the maximum " % shown
+
+-- | A type for ordering alternatives.
+-- Chosen because its 'Ord' instance will put alternatives with recent failures
+-- (first component True) behind those without.
+-- Second component is the sum of aheads and in flights for that alternative.
+type AltOrdering = (Bool, Int)
 
 -- | Check how many messages are currently ahead
 --
