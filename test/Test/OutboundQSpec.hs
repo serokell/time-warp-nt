@@ -49,22 +49,24 @@ testInFlight = do
 
     runEnqueue $ do
       -- Send messages asynchronously
-      forM_ [1..10] $ \n -> do
-        rIdx <- liftIO $ generate $ choose (0, 3)
-        send Asynchronous (allNodes !! rIdx) (MsgTransaction OriginSender) (MsgId n)
+      forM_ [1..1000] $ \n -> do
+        send Asynchronous (allNodes !! 0) (MsgTransaction OriginSender) (MsgId n)
+      -- Abruptly unsubscribe whilst messages are getting delivered
+      forM_ allNodes $ \theNode -> setPeers theNode []
 
     -- Verify the invariants
     let queues = map nodeOutQ allNodes
     forM_ queues OutQ.flush
 
     allInFlights <- mapM OutQ.currentlyInFlight queues
+    print allInFlights
     return $ all allGreaterThanZero allInFlights
 
 allGreaterThanZero :: M.Map NodeId (M.Map OutQ.Precedence Int) -> Bool
 allGreaterThanZero imap = all (>= 0) $ (concatMap M.elems (M.elems imap))
 
 spec :: Spec
-spec = describe "OutBoundQ" $ modifyMaxSuccess (const 2000) $ do
+spec = describe "OutBoundQ" $ modifyMaxSuccess (const 1000) $ do
   -- Simulate a multi-peer conversation and then check
   -- that after that we never have a negative count for
   -- the `qInFlight` field of a `OutBoundQ`.
