@@ -402,6 +402,10 @@ dumpState outQ@OutQ{} formatter = do
   where
     format = "OutboundQ internal state '{"%shown%"}'"
 
+-- | Debug function to return the `InFlight` map. Internal use only.
+currentlyInFlight :: forall m msg nid buck. MonadIO m => OutboundQ msg nid buck -> m (InFlight nid)
+currentlyInFlight = liftIO . readMVar . qInFlight
+
 -- | Type assumed for unknown nodes
 --
 -- Occassionally the queue will receive requests to send messages to nodes it
@@ -869,10 +873,6 @@ countAhead OutQ{..} nid prec = do
   where
     debugInFlight :: InFlight nid -> Text
     debugInFlight = sformat (string % ": inFlight = " % shown) qSelf
-
-
-currentlyInFlight :: forall m msg nid buck. MonadIO m => OutboundQ msg nid buck -> m (InFlight nid)
-currentlyInFlight = liftIO . readMVar . qInFlight
 
 
 {-------------------------------------------------------------------------------
