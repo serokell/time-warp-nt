@@ -41,6 +41,7 @@ import           Test.Util                             (HeavyParcel (..),
 
 testInFlight :: IO Bool
 testInFlight = do
+    removeAllHandlers -- disable logging
     -- Set up some test nodes
     allNodes <- M.runProduction $ do
       ns <- forM [1..4] $ \nodeIdx -> newNode (C nodeIdx) NodeCore  (CommsDelay 0)
@@ -59,7 +60,6 @@ testInFlight = do
     forM_ queues OutQ.flush
 
     allInFlights <- mapM OutQ.currentlyInFlight queues
-    print allInFlights
     return $ all allGreaterThanZero allInFlights
 
 allGreaterThanZero :: M.Map NodeId (M.Map OutQ.Precedence Int) -> Bool

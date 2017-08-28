@@ -25,6 +25,7 @@
 {-# LANGUAGE ScopedTypeVariables       #-}
 {-# LANGUAGE StandaloneDeriving        #-}
 {-# LANGUAGE TupleSections             #-}
+{-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
 
 module Network.Broadcast.OutboundQueue (
     OutboundQ -- opaque
@@ -312,14 +313,23 @@ type InFlight nid = Map nid (Map Precedence Int)
 -- trying again
 type Failures nid = Map nid (UTCTime, ReconsiderAfter)
 
-inFlightTo :: Ord nid => nid -> Lens' (InFlight nid) (Map Precedence Int)
+inFlightTo :: Ord nid => nid -> Getter (InFlight nid) (Map Precedence Int)
 inFlightTo nid = at nid . anon Map.empty Map.null
 
-inFlightWithPrec :: Ord nid => nid -> Precedence -> Lens' (InFlight nid) Int
+inFlightWithPrec :: Ord nid => nid -> Precedence -> Getter (InFlight nid) Int
 inFlightWithPrec nid prec = inFlightTo nid . at prec . anon 0 (== 0)
 
-inFlightFor :: Ord nid => Packet msg nid a -> Lens' (InFlight nid) Int
-inFlightFor Packet{..} = inFlightWithPrec packetDestId packetPrec
+-- | Given an update function and a `Packet`, set the `InFlight` to the new value
+-- calculated by the updater. In case no match can be found, this function is
+-- effectively a noop.
+setInFlightFor :: (MonadIO m, Ord nid)
+               => Packet msg nid a
+               -> (Int -> Int)
+               -> MVar (InFlight nid)
+               -> m ()
+setInFlightFor Packet{..} updater var = liftIO $ modifyMVar_ var $ \iflight -> do
+    let updateInner = Map.adjust updater packetPrec
+    return $ Map.adjust updateInner packetDestId iflight
 
 -- | The outbound queue (opaque data structure)
 --
@@ -924,7 +934,7 @@ intDequeue outQ@OutQ{..} threadRegistry@TR{} sendMsg = do
       sendStartTime <- liftIO $ getCurrentTime
 
       -- Mark the message as in-flight, limiting both enqueues and dequeues
-      applyMVar_ qInFlight $ inFlightFor p %~ (\n -> n + 1)
+      setInFlightFor p (\n -> n + 1) qInFlight
 
       -- We mark the node as rate limited, making it unavailable for any
       -- additional dequeues until the timer expires and we mark it as
@@ -947,7 +957,7 @@ intDequeue outQ@OutQ{..} threadRegistry@TR{} sendMsg = do
         ma <- M.try $ unmask $ sendMsg (packetPayload p) (packetDestId p)
 
         -- Reduce the in-flight count ..
-        applyMVar_ qInFlight $ inFlightFor p %~ (\n -> n - 1)
+        setInFlightFor p (\n -> n - 1) qInFlight
         liftIO $ poke qSignal
 
         -- .. /before/ notifying the sender that the send is complete.
