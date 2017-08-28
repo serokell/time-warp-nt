@@ -71,6 +71,7 @@ module Network.Broadcast.OutboundQueue (
     -- * Debugging
   , registerQueueMetrics
   , dumpState
+  , currentlyInFlight
   ) where
 
 import Control.Concurrent
@@ -858,6 +859,11 @@ countAhead OutQ{..} nid prec = do
   where
     debugInFlight :: InFlight nid -> Text
     debugInFlight = sformat (string % ": inFlight = " % shown) qSelf
+
+
+currentlyInFlight :: forall m msg nid buck. MonadIO m => OutboundQ msg nid buck -> m (InFlight nid)
+currentlyInFlight = liftIO . readMVar . qInFlight
+
 
 {-------------------------------------------------------------------------------
   Interpreter for the dequeueing policy
