@@ -320,16 +320,19 @@ inFlightWithPrec :: Ord nid => nid -> Precedence -> Getter (InFlight nid) Int
 inFlightWithPrec nid prec = inFlightTo nid . at prec . anon 0 (== 0)
 
 -- | Given an update function and a `Packet`, set the `InFlight` to the new value
--- calculated by the updater. In case no match can be found, this function is
--- effectively a noop.
-setInFlightFor :: (MonadIO m, Ord nid)
+-- calculated by `f`. In case no match can be found, this function is effectively a noop.
+setInFlightFor :: forall m msg nid a. (MonadIO m, Ord nid)
                => Packet msg nid a
                -> (Int -> Int)
                -> MVar (InFlight nid)
                -> m ()
-setInFlightFor Packet{..} updater var = liftIO $ modifyMVar_ var $ \iflight -> do
-    let updateInner = Map.adjust updater packetPrec
-    return $ Map.adjust updateInner packetDestId iflight
+setInFlightFor Packet{..} f var = liftIO $ modifyMVar_ var (return . update)
+  where
+    update :: InFlight nid -> InFlight nid
+    update = Map.adjust updateInnerMap packetDestId
+
+    updateInnerMap :: Map Precedence Int -> Map Precedence Int
+    updateInnerMap = Map.adjust f packetPrec
 
 -- | The outbound queue (opaque data structure)
 --
