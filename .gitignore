@@ -25,5 +25,3 @@ cabal.project.local
 # log files
 *.log
 *.csv
-
-.dir-locals.el
