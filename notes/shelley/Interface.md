@@ -27,7 +27,10 @@ getBlock :: HeaderHash -> IO (Maybe Block)
 -- TBD whether this will be needed.
 -- Diffusion layer decides when it returns (must have a timeout) and of course
 -- which peers to ask.
-getTips :: IO [HeaderHash]
+--
+-- A 'RawBlockHeader' is given, i.e. it's decoded from the wire but not
+-- validated. Application layer can validate it as needed.
+getTips :: IO [RawBlockHeader]
 
 -- Offer a block for diffusion.
 -- Is it OK to return right away? Or should the diffusion layer respond with
@@ -64,7 +67,7 @@ getBlockFromDB :: HeaderHash -> IO Block
 -- TBD whether we'll need this.
 -- If the application layer ever needs to know the tips of peers, then we will
 -- indeed need it.
-getTipFromDB :: IO HeaderHash
+getTipFromDB :: IO RawBlockHeader
 ```
 
 ## Queueing / buffering between these layers
