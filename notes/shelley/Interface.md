@@ -186,3 +186,242 @@ block retrieval queue clearing loop, possibly ending recovery mode.
 
 We can keep this as is (equally bad, not worse) by using the synchronous
 `getBlocks` function and letting the diffusion layer take care of finding them.
+
+## Concrete details of implementation
+
+Now for some actual Haskell text.
+
+The form of the program will be something like this: set up the diffusion and
+logic layers, then run them concurrently.
+In this snippet, IO is used as a stand-in. I know we'll actually be using
+something a little more sophisticated.
+
+```Haskell
+-- Logic layer interface.
+data Logic = Logic
+  { isValidBlockHeader :: BlockHeader -> IO Bool
+  , isValidTransaction :: Tx -> IO Bool
+  , getBlock :: HeaderHash -> IO Block
+  , getTip :: IO RawBlockHeader
+  , postBlockHeader :: BlockHeader -> IO ()
+  , ...
+  }
+
+data LogicLayer = LogicLayer
+  { logic :: Logic
+  , runLogicLayer :: IO ()
+  }
+
+-- Diffusion layer interface.
+data Diffusion = Diffusion
+  { getBlocks :: HeaderHash -> [HeaderHash] -> IO [Block]
+  , getBlock :: HeaderHash -> IO (Maybe Block)
+  , getTips :: IO [RawBlockHeader]
+  , announceBlockHeader :: BlockHeader -> IO ()
+  , ...
+  }
+
+data DiffusionLayer = DiffusionLayer
+  { diffusion :: Disfussion
+  , runDiffusionLayer :: IO ()
+  }
+
+-- Cardano SL main for some choice of logic and diffusion.
+-- All of the goodies are abstracted in Logic and Diffusion.
+-- Both full node and light relay can be expressed by this.
+--
+-- It's in continuation style because the function passed must be capable of
+-- bracketing, for resource acquisition and release. For example: the logic
+-- layer will bracket databases and maybe some other things (see
+-- allocateNodeResources, releaseNodeResources).
+--
+-- There could be and will be another layer of bracketing. It's assumed that
+-- runLogicLayer and runDiffusionLayer take care of any necessary bracketing /
+-- exception handling there. For example: a network-transport and a kademlia
+-- instance will be bracketed in 'runDiffusionLayer', as these parts should
+-- only come up once both of layers are ready (i.e. within the continuation we
+-- pass to withLayers).
+cslMain :: (forall x . ((LogicLayer, DiffusionLayer) -> IO x) -> IO x) -> IO ()
+cslMain withLayers = withLayers $ \(logicLayer, diffusionLayer) ->
+  -- TBD; concurrently, or race? Latter may be a better option, but if they're
+  -- both expected to run indefinitely (forall x . IO x) then it doesn't matter,
+  -- an exception in either will halt them both.
+  void $ concurrently (runLogicLayer logicLayer) (runDiffusionLayer diffusionLayer)
+
+-- Lazy in the diffusion layer: nothing is forced until the logic layer
+-- is set in motion by 'runLogic'.
+--
+-- Uses the 'Diffusion' record to discharge the monad transformers found in
+-- the current cardano-sl implementation.
+--
+-- It's in continuation style in order to facilitate bracketing and recursive
+-- do. Check out 'withLayersFullNode' to see how it's used (where the recursive
+-- do arises).
+withLogicLayerFullNode :: ((Diffusion -> IO LogicLayer) -> IO x) -> IO x
+withLogicLayerFullNode expectDiffusionLayer =
+  bracket acquireNodeResources releaseNodeResources $ \nodeResources -> do
+    ...
+    expectDiffusionLayer $ \diffusionLayer -> do
+      ...
+      pure LogicLayer {..}
+
+-- Lazy in the logic layer: nothing is forced until the diffusion layer
+-- is set in motion by 'runDiffusion'.
+--
+-- Uses the 'Logic' record to implement certain features.
+--
+-- Again, in a slightly weird continuation style because of bracketing and
+-- recursive do.
+withDiffusionLayer :: ((Logic -> IO DiffusionLayer) -> IO x) -> IO x
+withDiffusionLayer expectLogicLayer =
+  bracket acquire release $ \resources -> do
+    ...
+    expectLogicLayer $ \logicLayer -> do
+      ...
+      pure DiffusionLayer {..}
+
+-- A simulation diffusion layer which delivers data to the logic layer
+-- according to some deterministic process. No bracketing necessary, so its
+-- type is simpler (not continuation-based).
+mkDiffusionLayerSimulation :: IO DiffusionLayer
+
+-- The diffusion and logic layers are mutually dependent. They're acquired
+-- using recursive do.
+withLayersFullNode :: ((LogicLayer, DiffusionLayer) -> IO x) -> IO x
+withLayersFullNode k =
+  withLogicLayerFullNode $ \mkLogic ->
+    withDiffusionLayer $ \mkDiffusion -> mdo
+      logicLayer <- mkLogic (diffusion diffusionLayer)
+      diffusionLayer <- mkDiffusion (logic logicLayer)
+      k (logicLayer, diffusionLayer)
+
+main :: IO ()
+main = cslMain withLayersFullNode
+```
+
+Now the work factors into two parts:
+
+  1. `withLogicLayerFullNode`
+  2. `withDiffusionLayer`
+
+And that's neat: core team can do the first one, and we can do the second.
+For maximal parallelism, we can do it without deleting any of the existing
+implementation, only copying the pieces that are needed.
+
+In `Pos.Launcher.Resource`, for instance, the logic layer and diffusion layer
+resources are mixed together. Instead of paring this file down, we'll copy out
+the pieces relevant to each layer, to a file relevant to each layer.
+
+### Relationship to monad transformer stacks
+
+The diffusion and logic layers must not be required to work in the same
+monad. There are capabilities exposed by the logic layer's monadic context
+which must not be available in the diffusion layer, such as the database.
+
+#### Case study: reading from database
+
+The current database abstraction is `MonadRealDB`, which gives an accessor to
+information necessary to use rocks databases (file path, various operations on
+different logical databases).
+
+We don't want to offer all of this information to the diffusion layer. We don't
+want the diffusion layer to even know it's reading from a database, let alone
+a rocks database at a particular file path. Whatever monad the diffusion layer
+works within, it will not satisfy `MonadRealDB`.
+
+But the monad of the logic layer will be `MonadRealDB`, because it is now and
+we don't want to change that. So in the logic layer we'll still see for example
+
+```Haskell
+getBlock :: MonadRealDB m => HeaderHash -> m Block
+```
+
+and this will eventually be discharged by `openNodeDBs` and putting the
+resulting value into some reader context. But the result of `openNodeDBs` will
+also be used to come up with
+
+```haskell
+getBlock' :: HeaderHash -> IO Block
+```
+
+to be put into the `Logic` record and used by the diffusion layer.
+
+This can expressed in the types given above. It will go something like this:
+
+```Haskell
+withLogicLayerFullNode :: ((Diffusion -> IO LogicLayer) -> IO x) -> IO x
+withLogicLayerFullNode expectDiffusionLayer =
+  bracket acquireNodeResources releaseNodeResources $ \nodeResources -> do
+    let dbs = nrNodeDBs nodeResources
+        getBlock :: HeaderHash -> IO Block
+        getBlock = ... - use dbs to implement this.
+        initModeContext = InitModeContext dbs ... -- existing code does this.
+    ...
+    expectDiffusionLayer $ \diffusionLayer -> do
+      -- Existing code. Uses the DBs in initModeContext to discharge the
+      -- particular concrete MonadRealDB stack.
+      let runLogicLayer = runInitMode initModeContext ...
+      ...
+      -- getBlock and runLogicLayer are in scope
+      pure LogicLayer {..}
+```
+
+### Delivering incoming data
+
+There will be one dispatcher thread in cardano-sl, atop the diffusion layer.
+It will clear an unbounded channel and fork a thread to run the relevant
+cardano-sl handler for each datum (block header, mpc, tx, etc.). The
+channel is unbounded because there's no backpressure anyway; each new datum
+gets a new thread. In the future we'll bound it and maybe have a thread pool
+or something to ensure that a choked logic layer pushes back on the diffusion
+layer.
+
+NB: the listeners are
+  - Block (block header, get blocks, get block headers)
+  - ssc (relay)
+  - tx (relay)
+  - delegation (relay)
+  - update (relay)
+  - subscription
+
+Of these, only the block header input really matches what we want: logic layer
+can just call `handleUnsolicitedHeader`. For the others, data processing is
+mixed in with relaying: you process it and get a `Bool` indicating whether it
+should be relayed.
+
+So as a first step let's go for something like this:
+
+```Haskell
+inputDispatcher diffusionLayer = do
+  nextItem <- readChan (input diffusionLayer)
+  case nextItem of
+    BlockHeader header -> handleUnsolicitedHeader header
+  inputDispatcher diffusionLayer
+```
+
+Since `handleUnsolicitedHeader` just dumps it into its own block retrieval
+queue, this will spin fast and can keep up with all incoming headers; no need
+to spawn a thread each time.
+
+Ultimately we don't want the logic layer to decide whether to relay; that's all
+up to the diffusion layer. So we'll have to do a bit of surgery here. The
+diffusion layer can use synchronous calls into the application layer, as well
+as its own relay cache, to make the determination, but as for processing the
+data, it should all be done simply by dropping it into a queue.
+We'll eventually move to this:
+
+```Haskell
+inputDispatcher diffusionLayer = do
+  nextItem <- readChan (inputChannel diffusionLayer)
+  async $ case nextItem of
+    BlockHeader header -> handleUnsolicitedHeader header
+    Ssc ssc -> handleSsc ssc
+    Tx tx -> handleTx tx
+    Delegation del -> handleDelegation del
+    Update upd -> handleUpdate upd
+    -- Nothing for subscription, that's diffusion layer only.
+  inputDispatcher diffusionLayer
+```
+
+Whether we can or should get this for the initial refactor depends upon how
+easy it will be to refactor the (inv/req/)data handlers.
