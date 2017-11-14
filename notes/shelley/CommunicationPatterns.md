@@ -28,7 +28,7 @@ get data such as blocks or block headers that it knows it needs.
 
 It's enlightening to look at the proposed interface presented by the diffusion
 layer (where pub/sub lives) and the application layer (see this
-[document](./Inteface.md)). It's transparent to pub/sub; the application
+[document](./Interface.md)). It's transparent to pub/sub; the application
 layer won't know about it. Functions like `announceBlock` which diffuse data
 will induce a publish of that thing. Every subscriber for the block topic will
 be delivered the block.
