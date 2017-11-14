@@ -368,52 +368,56 @@ withLogicLayerFullNode expectDiffusionLayer =
 
 ### Delivering incoming data
 
-There will be one dispatcher thread in cardano-sl, atop the diffusion layer.
-It will clear an unbounded channel and fork a thread to run the relevant
-cardano-sl handler for each datum (block header, mpc, tx, etc.). The
-channel is unbounded because there's no backpressure anyway; each new datum
-gets a new thread. In the future we'll bound it and maybe have a thread pool
-or something to ensure that a choked logic layer pushes back on the diffusion
-layer.
+For the first interation, delivering incoming data from diffusion to logic
+will be simple and will not depart significantly from the status quo.
 
-NB: the listeners are
-  - Block (block header, get blocks, get block headers)
-  - ssc (relay)
-  - tx (relay)
-  - delegation (relay)
-  - update (relay)
-  - subscription
+#### Block headers
 
-Of these, only the block header input really matches what we want: logic layer
-can just call `handleUnsolicitedHeader`. For the others, data processing is
-mixed in with relaying: you process it and get a `Bool` indicating whether it
-should be relayed.
-
-So as a first step let's go for something like this:
+When a new block header is received, the diffusion layer will drop it into
+the block retrieval queue, i.e. call `handleUnsolicitedHeader`:
 
 ```Haskell
-inputDispatcher diffusionLayer = do
-  nextItem <- readChan (input diffusionLayer)
-  case nextItem of
-    BlockHeader header -> handleUnsolicitedHeader header
-  inputDispatcher diffusionLayer
+postBlockHeader :: BlockHeader -> IO ()
+postBlockHeader header = handleUnsolicitedHeader header
 ```
 
-Since `handleUnsolicitedHeader` just dumps it into its own block retrieval
-queue, this will spin fast and can keep up with all incoming headers; no need
-to spawn a thread each time.
+The interface for `handleUnsolicitedHeader` will change slightly, as per
+[these notes](./BlockRetrievalRecovery.md). Also note that `postBlockHeader`
+will look slightly different because it will have to discharge the moand
+transformer stack to get down to `IO` or `Production`.
 
-Ultimately we don't want the logic layer to decide whether to relay; that's all
-up to the diffusion layer. So we'll have to do a bit of surgery here. The
-diffusion layer can use synchronous calls into the application layer, as well
-as its own relay cache, to make the determination, but as for processing the
-data, it should all be done simply by dropping it into a queue.
-We'll eventually move to this:
+#### Any other data
+
+All of the other incoming data is processed by the inv/req/data framework.
+The logic layer must inform the diffusion layer on how to deal with the
+various types of messages: it will give the `InvReqDataParams` or
+`DataParams` values which describe these thing, and include synchronous calls
+into the logic layer to, for instance, process a new transaction or update
+proposal (`handleData`). These calls also determine whether to relay the data.
+
+The logic layer will *not* inform the diffusion layer on which listeners it
+should bring up, so it's not appropriate to have the logic layer interface
+include a set of `Relay` values from which the listeners can be automatically
+derived. Instead, it will offer the relevant calls for all of the relay types:
+
+  - ssc
+  - tx
+  - delegation
+  - update
+
+#### Future improvements
+
+Queueing will be placed between diffusion and logic. All new data coming in
+from the diffusion layer will pass through this queue, allowing us to
+prioritize and drop.
+
+We'll eventually move to something like this:
 
 ```Haskell
+inputDispatcher :: DiffusionLayer -> IO ()
 inputDispatcher diffusionLayer = do
   nextItem <- readChan (inputChannel diffusionLayer)
-  async $ case nextItem of
+  case nextItem of
     BlockHeader header -> handleUnsolicitedHeader header
     Ssc ssc -> handleSsc ssc
     Tx tx -> handleTx tx
@@ -423,5 +427,35 @@ inputDispatcher diffusionLayer = do
   inputDispatcher diffusionLayer
 ```
 
-Whether we can or should get this for the initial refactor depends upon how
-easy it will be to refactor the (inv/req/)data handlers.
+This would be one of the "workers" of the logic layer, forked at
+`runLogicLayer` time.
+
+### Making a DiffusionLayer
+
+Coming up with the diffusion layer interface before bringing up a transport
+and a time-warp-nt node is possible thanks to the existing `OutboundQ`.
+
+```Haskell
+withDiffusionLayer :: ((Logic -> IO DiffusionLayer) -> IO x) -> IO x
+withDiffusionLayer expectLogicLayer =
+  bracket acquire release $ \resources -> do
+    -- Create the outbound queue. Could also put it into 'resources', but it
+    -- doesn't require any teardown so it's OK here.
+    oqueue <- ...
+    let getBlocks :: [HeaderHash] -> IO Either GetBlocksFailure [Block]
+        getBlocks headers = enqueue oqueue (MsgGetBlocks headers) ...
+        getBlockHeaders :: Maybe HeaderHash -> [HeaderHash] -> IO [HeaderHash]
+        getBlockHeaders mTip checkpoints = enqueue oqueue
+    expectLogicLayer $ \logicLayer -> do
+      let runDiffusionLayer = node ... $ \theNode -> do
+            ...
+            withAsync (dequeueThread oqueue (sendMsg theNode)) $ \dqThread -> do
+              ...
+      pure DiffusionLayer {..}
+```
+
+*Aside*: we can't eliminate the `NodeId` from `handleUnsolicitedHeader` and
+recovery mode in general just yet, because diffusion layer will still need
+it in order to decide who to talk to. Eventually we'll have a more sophisticated
+diffusion layer which will figure this out automatically, but for now we
+should leave it.
