@@ -16,7 +16,7 @@ In fact we can settle for a weaker guarantee: an unreachable address will
 never evict a reachable address from an index, and will never prevent a
 reachable address from being included in the index.
 
-Our original 3-way handshake design gets us nowhere.
+~~Our original 3-way handshake design gets us nowhere.
 The proposal was to try to send to the joiner's host at a different (known,
 fixed) port, and include the joiner's address in the index only if the joiner
 can show that it received the sent data on that port.
@@ -24,9 +24,9 @@ It's feasible and not difficult to arrange for the peer's send to go through,
 even behind common NAT setups. The callback port is known, so the initiator
 can simply send some data to the peer on a UDP socket bound on that port
 before joining. Typical UDP hole punching NATs will admit the server's
-response.
+response.~~
 
-Since it's so easy to lie, we may as well take the joiner's word for it, and
+~~Since it's so easy to lie, we may as well take the joiner's word for it, and
 use a simpler join/discover protocol instead.
 The initiator claims whether it's addressable or not, and the server belives
 it. A malicious actor can't do any damage by lying. At worst, it will evict
@@ -34,7 +34,23 @@ a node from the peer's index, but only if that node is judged to be dead.
 If it enters the index, it will never prevent a live node from entering it,
 because it will be judged to be dead (won't respond to a ping).
 With this solution a connector can choose the port on which it listens,
-whereas in the 3-way handshake we'd need a known fixed port.
+whereas in the 3-way handshake we'd need a known fixed port.~~
+
+We'll use a 3-way handshake, in which the joining peer gives a port.
+That peer will try to reach the joining peer over UDP at that port, sending a
+nonce. If the initial peer receives the response, then it can assume that it
+is reachable from the internet. It responds with that nonce so that its peer
+also knows.
+
+Even though this is easy to fool, we decided that it's useful because it offers
+some sort of automatic discovery of public addressability. A node could become
+a supernode without any configuration.
+
+I (avieth) think this is silly. Anybody who doesn't know that their computer
+is reachable from the internet is in big trouble. Surely such a user would be
+capable of setting firewall rules, and therefore ought to have the technical
+capacity required to pass an extra command line argument to cardano-node
+indicating the public address.
 
 Nodes will not choose their own identifiers. Allowing this would open the
 door to easy eclipse attacks. Instead, peers derive the identifiers of their
@@ -44,8 +60,8 @@ https://syssec.kaist.ac.kr/~yongdaek/doc/kad_attack_securecomm.pdf
 
 ## Details
 
-There's a test suite, but it fails on `froozen/master`.
-Perhaps start by looking into that?
+There's a test suite, but it fails on `froozen/master`. Perhaps start by
+looking into that?
 
 Changing the identifier scheme will probably be the most invasive.
 
