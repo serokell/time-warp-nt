@@ -198,26 +198,67 @@ something a little more sophisticated.
 
 ```Haskell
 -- Logic layer interface.
+-- Used by the diffusion layer.
 data Logic = Logic
-  { isValidBlockHeader :: BlockHeader -> IO Bool
+  { -- Signed by the slot leader?
+  , isValidBlockHeader :: BlockHeader -> IO Bool
+    -- Consistent with the UTXO?
+    -- Is it OK to have two transactions in the mempool such that only one
+    -- could be included in a block? e.g. each one spends all of the agent's
+    -- cash.
   , isValidTransaction :: Tx -> IO Bool
-  , getBlock :: HeaderHash -> IO Block
-  , getTip :: IO RawBlockHeader
-  , postBlockHeader :: BlockHeader -> IO ()
+    -- Do we need this?
+  , getOurStakeholderId :: IO StakeholderId
+  , getBlock :: HeaderHash -> IO (Either GetBlockError Block)
+    -- There's no unexceptional reason why the tip can't be retrieved, so it's
+    -- not Either GetTipError BlockHeader; failure will just be an IO
+    -- exception (couldn't open DB or something horrible like that).
+  , getTip :: IO BlockHeader
+    -- Give a block header to the logic layer.
+    -- This will just call handleUnsolicitedHeader
+    -- The NodeId of the peer who gave it must be given, but that's only for
+    -- the first iteration (recovery mode needs it, so that we can ask that
+    -- same peer for the block body/bodies). In the future we'll let the
+    -- diffusion layer figure out who to ask.
+  , postBlockHeader :: BlockHeader -> NodeId -> IO ()
   , ...
   }
 
 data LogicLayer = LogicLayer
-  { logic :: Logic
+  { -- The interface.
+  , logic :: Logic
+    -- an IO to make it go (launch all the "workers", among other things).
   , runLogicLayer :: IO ()
   }
 
 -- Diffusion layer interface.
+-- Used by the logic layer.
 data Diffusion = Diffusion
-  { getBlocks :: HeaderHash -> [HeaderHash] -> IO [Block]
-  , getBlock :: HeaderHash -> IO (Maybe Block)
-  , getTips :: IO [RawBlockHeader]
+  { -- Logic layer wants some blocks from a particular node.
+    -- In the future, it won't give the NodeId, because the diffusion layer
+    -- should abstract that. It's only here for the first iteration.
+    -- NB: getBlockHeaders is rolled into this function, because as far as I
+    -- can see there's no point at which we want to get headers but not the
+    -- corresponding blocks.
+    getBlocks :: NodeId -> Maybe HeaderHash -> [HeaderHash] -> IO (Either GetBlocksError [Block])
+    -- This one may not be needed. It's supposed to get the tip of chain from
+    -- an assortment of peers.
+  , getTips :: IO [BlockHeader]
+    -- Ask the diffusion layer to announce a block header, probably because the
+    -- logic layer just minted it.
   , announceBlockHeader :: BlockHeader -> IO ()
+    -- TODO exhaustive list of other things that can be announced...
+    -- Perhaps a data type for this?
+    -- Will replace I think 'invReqDataFlowDo'/'invReqDataFlowTK'.
+    -- From lib/src/Pos/Communication/Methods.hs
+    --  sendTx
+    --  sendVote
+    --  sendUpdateProposal
+    -- From ssc/Pos/Ssc/Worker.hs
+    --  checkNSendOurCert
+    --  sendOurData
+    -- From auxx/src/Command/Proc.hs
+    --  two calls to 'dataFlow'
   , ...
   }
 
@@ -311,6 +352,29 @@ implementation, only copying the pieces that are needed.
 In `Pos.Launcher.Resource`, for instance, the logic layer and diffusion layer
 resources are mixed together. Instead of paring this file down, we'll copy out
 the pieces relevant to each layer, to a file relevant to each layer.
+
+### Use in derivative programs
+
+auxx, tools, wallet, and explorer.
+
+#### auxx
+
+Looking at `Main.hs`, it seems no change is necessary. A logic/diffusion layer
+split isn't needed here, so it runs neither of them. The complexity of the
+diffusion layer would be overkill given that the auxx only.
+
+NB: it uses the existing `Pos.Launcher` infrastructure and *does* spin up a
+time-warp node. That's fine.
+
+#### wallet
+
+Similar story to auxx: it will run a time-warp node etc. via the `Pos.Launcher`
+infrastructure. However, the wallet *should* use the logic/diffusion layer
+split, as it does at the moment run all the full node logic.
+
+#### explorer
+
+Again, similar story.
 
 ### Relationship to monad transformer stacks
 
