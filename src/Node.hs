@@ -54,6 +54,8 @@ module Node (
 
     , LL.Timeout(..)
 
+    , waitForDispatcher
+
     ) where
 
 import           Control.Exception          (SomeException, Exception(..))
@@ -90,10 +92,19 @@ data Node m = Node {
       nodeId         :: LL.NodeId
     , nodeEndPoint   :: NT.EndPoint m
     , nodeStatistics :: m (LL.Statistics m)
+      -- | Waits for the dispatcher thread.
+      -- Useful if you want to use the node's dispatcher for control flow;
+      -- it won't end until the network-transport endpoint shuts down, so
+      -- blocking on this effectively keeps the server up for as long as
+      -- possible
+    , nodeDispatcher :: m ()
     }
 
 nodeEndPointAddress :: Node m -> NT.EndPointAddress
-nodeEndPointAddress (Node addr _ _) = LL.nodeEndPointAddress addr
+nodeEndPointAddress = LL.nodeEndPointAddress . nodeId
+
+waitForDispatcher :: Node m -> m ()
+waitForDispatcher = nodeDispatcher
 
 data Input t = Input t | End
 
@@ -295,7 +306,12 @@ node
 node mkEndPoint mkReceiveDelay mkConnectDelay prng packing peerData nodeEnv k = do
     rec { let nId = LL.nodeId llnode
               endPoint = LL.nodeEndPoint llnode
-              nodeUnit = Node nId endPoint (LL.nodeStatistics llnode)
+              nodeUnit = Node
+                  { nodeId         = nId
+                  , nodeEndPoint   = endPoint
+                  , nodeStatistics = LL.nodeStatistics llnode
+                  , nodeDispatcher = wait (LL.nodeDispatcherThread llnode)
+                  }
               NodeAction mkListeners (act :: Converse packing peerData m -> m t) = k nodeUnit
               -- Index the listeners by message name, for faster lookup.
               -- TODO: report conflicting names, or statically eliminate them using
