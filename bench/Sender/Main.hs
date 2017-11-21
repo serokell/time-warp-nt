@@ -123,7 +123,7 @@ main = do
         :: Node (LoggerNameBox Production)
         -> NodeId
         -> LoggerNameBox Production (NT.Connection (LoggerNameBox Production))
-    startDrone (Node _ endPoint _) (NodeId peer) = do
+    startDrone (Node _ endPoint _ _) (NodeId peer) = do
         Right conn <- NT.connect endPoint peer NT.ReliableOrdered (NT.ConnectHints Nothing)
         pure conn
 
