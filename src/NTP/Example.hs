@@ -16,7 +16,7 @@ module NTP.Example
 import           Control.Monad         (void)
 import           Data.Default          (def)
 import           System.Wlog           (LoggerNameBox, Severity (..), initTerminalLogging,
-                                        usingLoggerName)
+                                        usingLoggerName, defaultHandleAction)
 import           System.Wlog.Formatter (centiUtcTimeF)
 
 import           Mockable.Instances    ()
@@ -27,6 +27,6 @@ type WorkMode = LoggerNameBox Production
 
 runNtpClientIO :: NtpClientSettings WorkMode -> IO ()
 runNtpClientIO settings = do
-    initTerminalLogging centiUtcTimeF True True (Just Debug)
+    initTerminalLogging centiUtcTimeF defaultHandleAction True True (Just Debug)
     void $ runProduction $ usingLoggerName "ntp-example" $
         startNtpClient settings
