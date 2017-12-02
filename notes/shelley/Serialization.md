@@ -1,5 +1,7 @@
 # Serialization
 
+**Note**: there is an effort to decide on partial serialization/deserialization approach in [doc](https://github.com/input-output-hk/cardano-sl/blob/volhovm/csl1859-serialization-doc/docs/proposals/serialization.md) and [corresponding PR](https://github.com/input-output-hk/cardano-sl/pull/1903).
+
 The time cost of (de)serialization appears in network latency: in order to
 propagate a block throughout the network, each node will deserialize it from
 the sender (publisher) or database, and then reserialize once for each
