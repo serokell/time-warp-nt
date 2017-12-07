@@ -2,8 +2,9 @@
 
 ## Overview
 
-Instead of initating and forwarding broadcasts (choosing the 'out' edges), nodes
-will publish and subscribe (choose the 'in' edges). 
+For relaying: instead of choosing where to forward messages (choosing the 'out'
+edges), nodes will publish to their subscribers (choose the 'in' edges).
+For initiating broadcasts: nodes will still choose the destination peers.
 
 A subscription will be organized into topics (blocks, transactions, MPC, etc.).
 
@@ -21,21 +22,75 @@ to it for that same topic. Call it lazy subscription.
 This shouldn't be a problem, because the same system which observes new
 subscriptions is responsible for making subscriptions to others.
 
-A request/response pattern must also be supported, so that a node can actively
-get data such as blocks or block headers that it knows it needs.
-
-### Interface with application layer
-
-It's enlightening to look at the proposed interface presented by the diffusion
-layer (where pub/sub lives) and the application layer (see this
-[document](./Interface.md)). It's transparent to pub/sub; the application
-layer won't know about it. Functions like `announceBlock` which diffuse data
-will induce a publish of that thing. Every subscriber for the block topic will
-be delivered the block.
+### Hybrid request/repsponse and pub/sub.
 
 Functions like `getBlocks` which bring data up from the diffusion layer may
 need to request that data from peers, so a hybrid request/response and pub/sub
-model is needed.
+model is needed. Transaction, delegation, and update submission also require
+the active request/response approach, because edge nodes behind a firewall
+and/or NAT must be able to do this, but such a node cannot have any
+subscribers. Even publishing a new block (slot leader) must work by
+request/response, for edge nodes must be capable of doing this as well.
+
+### Porting the Inv/Req/Data relay system
+
+We believe the key/value distinction is still important: you can send a key
+identifying the data and the receiver can request or reject the payload. This
+will probably save a lot of wasted traffic as a piece of data can reach a node
+by multiple paths.
+
+When a piece of data is being published (like a new block or a transaction,
+see request/response) the key/value can be skipped and the whole payload can
+be sent at once, because we know the receiver won't have it. The key/value
+distinction is only useful when relaying, and so is relevant only to pub/sub.
+
+When a datum is to be published (that's to say, republished, or relayed), its
+key will be sent to all subscribers, and the subscribers can asynchronously
+request the data for it or indicate that it will not request it. This could
+permit a TCP-style flow control algorithm: if the publisher notices too much
+"un-ACKed" data (keys for which the particular subscriber has not returned a
+yes or no answer) then it can attenuate the flow.
+
+To avoid cycles in relaying, a node must remember keys which have been
+published to it for a certain amout of time. If such a key comes up again,
+it will send a negative ACK meaning "I don't want the payload" and it will not
+be relayed. A datum is relayed only if the payload was requested.
+The current implementation uses the blockchain and transaction mempool to
+determine whether something should be requested and relayed; the diffusion
+layer will use its own cache.
+
+Here's a crude state machine for the relay cache.
+
+States:
+
+  1. `k` and `v` are unknown
+  2. `k` is known but `v` is unknown
+  3. `k` and `v` are known
+
+Transitions:
+
+  - `k` is published to us
+    If in state 1, ask the publisher for `v`, enter state 2.
+    If in state 2, reject the offer from the publisher, remain in state 2.
+    If in state 3, reject the offer from the publisher, remain in state 3.
+  - `v` is published to us
+    If in state 1, remain in state 1. This should not happen.
+    If in state 2, remember `v` and relay `k` and `v` to subscribers, enter
+      state 3.
+    If in state 3, remain in state 3. This should not happen.
+  - TTL on the key expires.
+    If in state 1, this makes no sense, since we don't have the key.
+    If in state 2, forget `v` and enter state 1.
+      This is dodgy. It means the publisher failed to deliver before TTL.
+    If in state 3, forget `k` and `v` and enter state 1.
+
+### Stretch: privacy considerations
+
+There are known deanonymization schemes effective against cardano (and other
+cryptocurrencies including bitcoin) which exploit predictable patterns of
+broadcast. It's not a requirement for Shelley, but eventually we may want to
+use a mitigating broadcast scheme. Such a solution could include bouncing
+new transactions through other edge nodes, by way of an intermediate core node.
 
 ## Implementation
 
@@ -95,6 +150,79 @@ and is missing some that we will need.
     of current subscribers (at the moment these are easily confused in the
     buckets of `Peers`).
 
+## Subscription conversation
+
+There's one conversation per subscription. It's opened by the subscriber and
+initially is subscribed to no topics.
+
+### Subscriber sends
+
+  - AddTopic (Topic msg) : subscribe to a topic.
+  - RemoveTopic (Topic msg) : unsubscribe from a topic.
+  - Request key : get the payload for a key.
+  - Ignore key : signal that we don't want the payload for a key.
+  - Keepalive : send after a certain amount of inactivity. Useful for
+      detecting half-open TCP connections (intermittent lower-layer failures).
+
+### Publisher sends
+
+  - Announce key : indicate that a payload for this key is available.
+  - Payload value : give the payload for a key.
+
+Should the publisher acknowledge add/remove topic?
+If a subscriber adds a topic and then removes it, there may be announces for
+that topic inbound.
+
+## Interface
+
+```Haskell
+data PubSub (topic :: * -> *) d
+
+-- Every topic, with key and value types given.
+data Topic k v where
+  Block :: Topic BlockHeader Block
+  Txp :: Topic TxId TxAux
+  Mpc :: Topic StakeholderId MpcMsg
+  ...
+
+-- Subscriber can send values of this type.
+data Subscription topic where
+  AddTopic :: topic k v -> Subscription topic
+  RemoveTopic :: topic k v -> Subscription topic
+  Request :: topic k v -> k -> Subscription topic
+  Ignore :: topic k v -> k -> Subscription topic
+  Keepalive :: Subscription topic
+
+-- Publisher can send values of this type.
+data Publication topic where
+  Announce :: topic k v -> k -> Publication topic
+  Payload :: topic k v -> v -> Publication topic
+
+-- Publish a message. Asynchronous. Returns right away.
+-- The program which publishes is not informed of publication failure.
+-- The pub/sub system can retry or drop according to some policy.
+publish :: PubSub topic d -> Publication topic -> d ()
+
+-- Does nothing if already subscribed and returns False.
+-- The callback is a mechanism for backpressure. The dequeueing thread of the
+-- pub/sub system will wait for the callback to finish before continuing.
+subscribe :: PubSub topic d -> topic k v -> d Bool
+
+-- Does nothing if not currently subscribed.
+unsubscribe :: PubSub topic d -> topic k v -> d ()
+
+-- What to do with a publication.
+-- Announcements must indicate whether to request or ignore.
+-- Payloads must be processed somehow.
+data Next topic d = Next
+  { announce :: NodeId -> topic k v -> k -> d Bool
+  , payload :: NodeId -> topic k v -> v -> d ()
+  }
+
+-- Take the next publication (from any subscriber).
+next :: PubSub topic d -> Next topic d -> d ()
+```
+
 ## Questions, caveats, risks
 
 ### Publish over subscription channel
@@ -105,6 +233,10 @@ do now) have one conversation control the lifetime of the connection, and
 starting other conversations to publish each datum.
 
 It's not clear whether this has any big advantages or disadvantages.
+
+Decided: we'll use one time-warp conversation for the whole subscription.
+The subscriber can add/remove topics, ACK published keys, and send keepalive
+messages. The publisher can send keys and values.
 
 ### Changes to time-warp
 
@@ -118,6 +250,8 @@ Doing it at the publisher will reduce network traffic but the publisher will
 have to do more work. Doing it at the subscriber offloads the filtering work
 to the subscriber. Filtering won't be expensive (a pattern match) so it's
 probably best to do it at the publisher.
+
+Decided: do it publisher side.
 
 ### Dead subscriptions due to half-open connections
 
@@ -136,5 +270,14 @@ hundred) to avoid any such problems.
 There's already a maximum subscribers configuration in the outbound queue that
 can be reused.
 
-The `ConccurentMultiQueue` used now to enqueue conversations may not be
+This concern is misplaced because at this level we have no control over
+accepting or rejecting TCP connections. This issue must be solved at the level
+of network-transport(-tcp). There are very old issues proposing the ability to
+drop or reject a "heavyweight connection" (TCP connection) but none have been
+implemented:
+
+https://github.com/haskell-distributed/network-transport/issues/25
+https://github.com/haskell-distributed/network-transport/issues/17
+
+The `ConcurrentMultiQueue` used now to enqueue conversations may not be
 suitable for use with a large number of subscribers.
